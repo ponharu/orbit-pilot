@@ -1,70 +1,146 @@
 import type { AgentContext, GitHubIssue, RepoTarget } from './types';
 
-type PromptInput = {
+export type MainThreadPhase = 'investigate' | 'diagnose' | 'implement' | 'handoff';
+
+type MainThreadPromptInput = {
   target: RepoTarget;
   issue: GitHubIssue;
   context: AgentContext;
   branchName: string;
   mergeConflictContext: string | null;
-  initialRun: boolean;
+  initialThreadTurn: boolean;
   runtimeRulesText: string;
+  phase: MainThreadPhase;
+  selfReviewFeedback?: string | null;
+  handoffRequirements?: string | null;
 };
 
-export function buildAgentPrompt(input: PromptInput) {
-  if (input.initialRun) {
-    return buildInitialPrompt(input);
+type ReviewPromptInput = {
+  target: RepoTarget;
+  issue: GitHubIssue;
+  branchName: string;
+  context: AgentContext;
+};
+
+export function buildMainThreadPrompt(input: MainThreadPromptInput) {
+  const sections: string[] = [];
+
+  if (input.initialThreadTurn) {
+    sections.push('Runtime rules:', input.runtimeRulesText, '');
+  } else {
+    sections.push('Continuation guidance:', '');
+    sections.push(
+      '- Continue from the current workspace and thread state.',
+      '- The runtime rules and original task are already present in this thread, so do not restate them.',
+      '- Focus only on the current phase.',
+      '',
+    );
   }
 
-  return buildContinuationPrompt(input);
+  sections.push(
+    'Execution context:',
+    `Repository: ${input.target.fullName}`,
+    `Issue #${input.issue.number}: ${input.issue.title}`,
+    `URL: ${input.issue.htmlUrl}`,
+    `Branch: ${input.branchName}`,
+    `State: ${input.context.state}`,
+    `Phase: ${input.phase}`,
+  );
+
+  if (input.initialThreadTurn) {
+    sections.push(
+      '',
+      input.issue.body.trim() ? 'Issue body:' : 'Issue body: (empty)',
+      input.issue.body.trim() || '(empty)',
+    );
+  }
+
+  sections.push('', 'Phase instructions:', phaseInstructions(input.phase, input.context.state));
+  appendContextSections(
+    sections,
+    input.context,
+    input.mergeConflictContext,
+    input.selfReviewFeedback,
+    input.handoffRequirements,
+  );
+  return sections.join('\n');
 }
 
-function buildInitialPrompt({
-  target,
-  issue,
-  context,
-  branchName,
-  mergeConflictContext,
-  runtimeRulesText,
-}: PromptInput) {
+export function buildSelfReviewPrompt(input: ReviewPromptInput) {
   const sections = [
-    'Runtime rules:',
-    runtimeRulesText,
+    'You are acting as a strict internal reviewer for the current workspace state.',
+    '',
+    'Rules:',
+    '- Do not modify files, create commits, push branches, or write to GitHub.',
+    '- Review the current workspace as it exists right now.',
+    '- Focus on correctness, regressions, missing validation, and incomplete handoff work.',
+    '- Ignore stylistic nits unless they block a safe merge.',
     '',
     'Execution context:',
-    `Repository: ${target.fullName}`,
-    `Issue #${issue.number}: ${issue.title}`,
-    `URL: ${issue.htmlUrl}`,
-    `Branch: ${branchName}`,
-    `State: ${context.state}`,
+    `Repository: ${input.target.fullName}`,
+    `Issue #${input.issue.number}: ${input.issue.title}`,
+    `Branch: ${input.branchName}`,
+    `State: ${input.context.state}`,
     '',
-    issue.body.trim() ? 'Issue body:' : 'Issue body: (empty)',
-    issue.body.trim() || '(empty)',
+    'Output format:',
+    'RESULT: pass | changes_requested',
+    'SUMMARY: one sentence',
+    'FINDINGS:',
+    '- one finding per line, or',
+    '- none',
   ];
 
-  appendContextSections(sections, context, mergeConflictContext);
+  appendContextSections(sections, input.context, null, null, null);
   return sections.join('\n');
 }
 
-function buildContinuationPrompt({ target, issue, context, branchName, mergeConflictContext }: PromptInput) {
-  const sections = [
-    'Continuation guidance:',
-    '',
-    `- Continue issue #${issue.number} in ${target.fullName}.`,
-    `- Work on branch ${branchName}.`,
-    `- Current state is ${context.state}.`,
-    '- The runtime rules and original task are already present in this thread, so do not restate them.',
-    '- Resume from the current workspace state.',
-    '- Focus on the remaining work only.',
-    '- GitHub updates remain your responsibility in this thread.',
-  ];
-
-  appendContextSections(sections, context, mergeConflictContext);
-  return sections.join('\n');
+function phaseInstructions(phase: MainThreadPhase, state: AgentContext['state']) {
+  switch (phase) {
+    case 'investigate':
+      return [
+        '- Inspect the repository and the issue requirements.',
+        '- Do not edit files in this phase.',
+        '- Identify the relevant code paths, risks, and a concise implementation plan.',
+        '- End with the plan and the files you expect to touch.',
+      ].join('\n');
+    case 'diagnose':
+      return [
+        '- Investigate the provided review feedback, CI failures, or prior failure context.',
+        '- Do not edit files in this phase.',
+        '- Determine the likely root cause and the minimal fix plan.',
+        '- End with the diagnosis and the files you expect to touch.',
+      ].join('\n');
+    case 'implement':
+      return [
+        state === 'implement'
+          ? '- Implement the planned change in the current workspace.'
+          : '- Apply the requested fix in the current workspace.',
+        '- Do not commit, push, or create/update pull requests in this phase.',
+        '- Run the relevant validation needed to support the change.',
+        '- Leave the workspace ready for review or handoff.',
+      ].join('\n');
+    case 'handoff':
+      return [
+        '- Finish the Git and GitHub handoff for the current workspace state.',
+        '- Commit the intended changes.',
+        '- Push the branch.',
+        '- If there is no open pull request for this branch yet, create one.',
+        '- If a pull request already exists, update it as needed.',
+        '- When this run is addressing review feedback, resolve only the review threads you actually fixed and leave comments for intentionally unaddressed feedback when useful.',
+        '- Do not leave this phase with uncommitted changes, an unpushed branch, or missing pull request handoff unless you are truly blocked.',
+      ].join('\n');
+  }
 }
 
-function appendContextSections(sections: string[], context: AgentContext, mergeConflictContext: string | null) {
+function appendContextSections(
+  sections: string[],
+  context: AgentContext,
+  mergeConflictContext: string | null,
+  selfReviewFeedback: string | null | undefined,
+  handoffRequirements: string | null | undefined,
+) {
   if (context.reviewFeedback) {
-    sections.push('', 'Review feedback:', context.reviewFeedback);
+    sections.push('', 'GitHub review feedback:', context.reviewFeedback);
   }
 
   if (context.ciFailures) {
@@ -75,7 +151,15 @@ function appendContextSections(sections: string[], context: AgentContext, mergeC
     sections.push('', 'Failure context:', context.failureContext);
   }
 
+  if (selfReviewFeedback) {
+    sections.push('', 'Internal self-review feedback:', selfReviewFeedback);
+  }
+
   if (mergeConflictContext) {
     sections.push('', 'Merge conflict context:', mergeConflictContext);
+  }
+
+  if (handoffRequirements) {
+    sections.push('', 'Outstanding handoff requirements:', handoffRequirements);
   }
 }

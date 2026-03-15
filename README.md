@@ -85,19 +85,21 @@ sandboxMode = "workspace-write"
 - Each issue gets its own managed branch, usually `${issueNo}-orbit-pilot`
 - Before review- or CI-triggered re-runs, the latest default branch is merged into the managed branch
 - If that merge conflicts, Codex is asked to resolve the conflict in place
-- PRs should stay Draft until the work is ready for human review
-- The runner checks the branch PR after each turn and self-assigns it if needed
+- The main Codex thread runs in phases: investigate or diagnose, implement, and handoff
+- Internal self-review runs in a separate read-only Codex thread and loops back into the main implementation thread when fixes are needed
+- The runner verifies handoff after each run: clean worktree, pushed branch, and open pull request when code changes were made
+- The runner checks the branch PR after each handoff turn and self-assigns it if needed
 
 ## Runtime Rules
 
-On the first Codex turn, `orbit-pilot` injects built-in runtime rules.
+On the first main-thread Codex turn, `orbit-pilot` injects built-in runtime rules.
 
 Those rules cover behavior that should not be overridden by repositories, such as:
 
-- keeping PRs in Draft until ready
 - self-assigning PRs
 - resolving only the review threads that were actually fixed
 - verifying GitHub writes before claiming success
+- respecting phase boundaries, including read-only investigation and self-review turns
 
 Repository-specific guidance can live in `AGENTS.md` at the root of each repository, for example:
 
