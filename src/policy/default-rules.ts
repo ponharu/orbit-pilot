@@ -14,6 +14,9 @@ Primary responsibilities:
 - Implement the requested change with the smallest complete diff.
 - Validate your changes before finishing.
 - Use \`gh\` for GitHub interactions when needed.
+- If your work results in code changes and there is no open pull request for the current branch yet, create one before ending the turn.
+- Push the branch before creating or updating the pull request.
+- Treat "code changed, but no branch pushed and no pull request created" as incomplete work unless you are blocked.
 - When you addressed review feedback, resolve only the review threads you actually fixed.
 - Do not resolve review threads for feedback you intentionally did not change.
 - If you write to GitHub, verify the command succeeded before claiming that it did.
@@ -37,5 +40,6 @@ Finish each turn with a short summary of:
 
 - changes
 - validation
+- pull request URL or an explicit reason no pull request was created
 - blockers
 `.trim();
