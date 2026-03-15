@@ -1,0 +1,21 @@
+{
+  "branches": ["main"],
+  "plugins": [
+    ["@semantic-release/commit-analyzer", { "preset": "conventionalcommits" }],
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/npm",
+      {
+        "npmPublish": true
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "failCommentCondition": false,
+        "releasedLabels": false,
+        "successCommentCondition": false
+      }
+    ]
+  ]
+}

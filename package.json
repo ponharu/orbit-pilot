@@ -1,0 +1,73 @@
+{
+  "name": "orbit-pilot",
+  "version": "0.0.0-semantic-release",
+  "description": "A Codex-powered GitHub issue pilot that autonomously carries assigned work through code, PRs, and review.",
+  "keywords": [
+    "agent",
+    "ai",
+    "bun",
+    "cli",
+    "codex",
+    "github",
+    "issues",
+    "pull-request"
+  ],
+  "homepage": "https://github.com/ponharu/orbit-pilot#readme",
+  "bugs": {
+    "url": "https://github.com/ponharu/orbit-pilot/issues"
+  },
+  "license": "MIT",
+  "author": "ponharu",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ponharu/orbit-pilot.git"
+  },
+  "bin": {
+    "orbit-pilot": "src/index.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md",
+    "orbit-pilot.example.toml"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "format": "bunx oxfmt . --write",
+    "lint": "bunx oxlint .",
+    "prepare": "bunx lefthook install",
+    "check": "tsc --noEmit",
+    "test": "bun test ./tests/unit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@octokit/graphql": "9.0.3",
+    "@openai/codex-sdk": "0.114.0",
+    "smol-toml": "1.6.0",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@semantic-release/commit-analyzer": "13.0.1",
+    "@semantic-release/github": "12.0.6",
+    "@semantic-release/npm": "13.1.5",
+    "@semantic-release/release-notes-generator": "14.1.0",
+    "@types/bun": "1.3.10",
+    "@types/node": "25.5.0",
+    "lefthook": "2.1.3",
+    "oxfmt": "0.36.0",
+    "oxlint": "1.51.0",
+    "semantic-release": "25.0.3",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "bun": ">=1.3.10",
+    "node": ">=24.10.0 || ^22.14.0"
+  },
+  "packageManager": "bun@1.3.10"
+}

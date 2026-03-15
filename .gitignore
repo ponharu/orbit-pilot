@@ -1,0 +1,9 @@
+node_modules/
+
+.DS_Store
+
+orbit-pilot.toml
+.orbit-pilot-state/
+workspaces/
+
+.lefthook/

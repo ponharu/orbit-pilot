@@ -1,0 +1,25 @@
+pre-commit:
+  commands:
+    oxfmt:
+      priority: 1
+      glob: '*.{js,jsx,ts,tsx,json}'
+      run: bunx oxfmt {staged_files} --write
+      stage_fixed: true
+
+    oxlint:
+      priority: 1
+      glob: '*.{js,jsx,ts,tsx}'
+      run: bunx oxlint {staged_files} --fix
+      stage_fixed: true
+
+    typecheck:
+      priority: 2
+      run: bun run typecheck
+
+pre-push:
+  commands:
+    typecheck:
+      run: bun run typecheck
+
+    test:
+      run: bun run test
