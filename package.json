@@ -20,7 +20,7 @@
   "author": "ponharu",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ponharu/orbit-pilot.git"
+    "url": "git+https://github.com/ponharu/orbit-pilot.git"
   },
   "bin": {
     "orbit-pilot": "src/index.ts"
