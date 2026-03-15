@@ -34,7 +34,6 @@ type RepositoryListItem = {
     name?: string | null;
   } | null;
   isArchived?: boolean;
-  isDisabled?: boolean;
 };
 
 type LinkedPullRequestQuery = {
@@ -158,21 +157,13 @@ export class GitHubClient {
 
     for (const owner of owners) {
       const items = await this.runGhJson<RepositoryListItem[]>(
-        [
-          'repo',
-          'list',
-          owner,
-          '--limit',
-          '1000',
-          '--json',
-          'name,nameWithOwner,owner,defaultBranchRef,isArchived,isDisabled',
-        ],
+        ['repo', 'list', owner, '--limit', '1000', '--json', 'name,nameWithOwner,owner,defaultBranchRef,isArchived'],
         process.cwd(),
       );
 
       for (const item of items) {
         const fullName = item.nameWithOwner?.trim();
-        if (!fullName || excluded.has(fullName.toLowerCase()) || item.isArchived || item.isDisabled) {
+        if (!fullName || excluded.has(fullName.toLowerCase()) || item.isArchived) {
           continue;
         }
 
