@@ -1,6 +1,6 @@
 import type { AgentContext, GitHubIssue, RepoTarget } from './types';
 
-export type MainThreadPhase = 'investigate' | 'diagnose' | 'implement' | 'handoff';
+export type MainThreadPhase = 'investigate' | 'diagnose' | 'implement' | 'fix' | 'handoff-draft' | 'handoff-update';
 
 type MainThreadPromptInput = {
   target: RepoTarget;
@@ -55,7 +55,7 @@ export function buildMainThreadPrompt(input: MainThreadPromptInput) {
     );
   }
 
-  sections.push('', 'Phase instructions:', phaseInstructions(input.phase, input.context.state));
+  sections.push('', 'Phase instructions:', phaseInstructions(input.phase));
   appendContextSections(
     sections,
     input.context,
@@ -94,7 +94,7 @@ export function buildSelfReviewPrompt(input: ReviewPromptInput) {
   return sections.join('\n');
 }
 
-function phaseInstructions(phase: MainThreadPhase, state: AgentContext['state']) {
+function phaseInstructions(phase: MainThreadPhase) {
   switch (phase) {
     case 'investigate':
       return [
@@ -112,22 +112,35 @@ function phaseInstructions(phase: MainThreadPhase, state: AgentContext['state'])
       ].join('\n');
     case 'implement':
       return [
-        state === 'implement'
-          ? '- Implement the planned change in the current workspace.'
-          : '- Apply the requested fix in the current workspace.',
+        '- Implement the planned change in the current workspace.',
         '- Do not commit, push, or create/update pull requests in this phase.',
         '- Run the relevant validation needed to support the change.',
-        '- Leave the workspace ready for review or handoff.',
+        '- Leave the workspace ready for handoff.',
       ].join('\n');
-    case 'handoff':
+    case 'fix':
+      return [
+        '- Apply the requested fix in the current workspace.',
+        '- Do not commit, push, or create/update pull requests in this phase.',
+        '- Run the relevant validation needed to support the change.',
+        '- Leave the workspace ready for handoff.',
+      ].join('\n');
+    case 'handoff-draft':
+      return [
+        '- Finish the initial Git and GitHub handoff for the current workspace state.',
+        '- Commit the intended changes.',
+        '- Push the branch.',
+        '- Create a draft pull request for this branch if one does not exist yet.',
+        '- If a pull request already exists, keep it in draft while updating it as needed.',
+        '- Do not leave this phase with uncommitted changes, an unpushed branch, or a missing draft pull request unless you are truly blocked.',
+      ].join('\n');
+    case 'handoff-update':
       return [
         '- Finish the Git and GitHub handoff for the current workspace state.',
         '- Commit the intended changes.',
         '- Push the branch.',
-        '- If there is no open pull request for this branch yet, create one.',
-        '- If a pull request already exists, update it as needed.',
+        '- Update the existing pull request as needed.',
         '- When this run is addressing review feedback, resolve only the review threads you actually fixed and leave comments for intentionally unaddressed feedback when useful.',
-        '- Do not leave this phase with uncommitted changes, an unpushed branch, or missing pull request handoff unless you are truly blocked.',
+        '- Do not leave this phase with uncommitted changes, an unpushed branch, or a missing open pull request unless you are truly blocked.',
       ].join('\n');
   }
 }

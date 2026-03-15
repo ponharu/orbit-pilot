@@ -34,6 +34,7 @@ export class AgentTurnError extends Error {
 type BranchPullRequest = {
   number: number;
   url: string;
+  isDraft: boolean;
   assignees: string[];
 };
 
@@ -59,7 +60,7 @@ type SelfReviewResult =
 
 type WorkspaceSnapshot = {
   hasUncommittedChanges: boolean;
-  commitsAheadOfDefault: number;
+  commitsAheadOfRemote: number;
   hasRemoteBranch: boolean;
   pullRequest: BranchPullRequest | null;
 };
@@ -71,6 +72,14 @@ type WorktreeFingerprint = {
 type HandoffInspection = {
   complete: boolean;
   summary: string | null;
+};
+
+type ThreadOptions = {
+  workingDirectory: string;
+  model: AppConfig['codex']['model'];
+  sandboxMode: AppConfig['codex']['sandboxMode'];
+  approvalPolicy: AppConfig['codex']['approvalPolicy'];
+  modelReasoningEffort: AppConfig['codex']['modelReasoningEffort'];
 };
 
 export class AgentRunner {
@@ -122,15 +131,16 @@ export class AgentRunner {
   ) {
     const workspace = await this.workspaceManager.prepareWorkspace(target, issue, cloneUrl, existingBranchName);
     const runtimeRules = await loadRuntimeRules();
+    const initialFlow = context.state === 'implement';
 
     const codex = new Codex();
-    const threadOptions = {
+    const threadOptions: ThreadOptions = {
       workingDirectory: workspace.path,
       model: this.config.codex.model,
       sandboxMode: this.config.codex.sandboxMode,
       approvalPolicy: this.config.codex.approvalPolicy,
       modelReasoningEffort: this.config.codex.modelReasoningEffort,
-    } as const;
+    };
 
     const mainThread = existingThreadId
       ? codex.resumeThread(existingThreadId, threadOptions)
@@ -141,15 +151,29 @@ export class AgentRunner {
       issue: issue.identifier,
       resumed: Boolean(existingThreadId),
       runtimeRulesPath: runtimeRules.path,
+      flow: initialFlow ? 'initial' : 'repair',
     });
 
-    let mainThreadInitialTurn = !existingThreadId;
+    let initialThreadTurn = !existingThreadId;
     let latestTurn: TurnResult | null = null;
-    let selfReviewFeedback: string | null = null;
 
     try {
-      const openingPhase: MainThreadPhase = context.state === 'implement' ? 'investigate' : 'diagnose';
-      const openingWorktree = await captureWorktreeFingerprint(workspace.path);
+      latestTurn = await this.runReadOnlyMainPhase(
+        mainThread,
+        target,
+        issue,
+        context,
+        workspace.path,
+        workspace.branchName,
+        workspace.mergeConflictContext,
+        runtimeRules.text,
+        initialFlow ? 'investigate' : 'diagnose',
+        initialThreadTurn,
+        mainThread.id ?? existingThreadId,
+        signal,
+      );
+      initialThreadTurn = false;
+
       latestTurn = await this.runMainPhase(
         mainThread,
         target,
@@ -158,23 +182,15 @@ export class AgentRunner {
         workspace.branchName,
         workspace.mergeConflictContext,
         runtimeRules.text,
-        openingPhase,
-        mainThreadInitialTurn,
+        initialFlow ? 'implement' : 'fix',
+        false,
         null,
         null,
         signal,
       );
-      await ensureWorktreeUnchanged(
-        workspace.path,
-        openingWorktree,
-        openingPhase,
-        workspace.branchName,
-        mainThread.id ?? existingThreadId,
-      );
-      mainThreadInitialTurn = false;
 
-      for (let reviewRound = 1; reviewRound <= MAX_SELF_REVIEW_ROUNDS; reviewRound += 1) {
-        latestTurn = await this.runMainPhase(
+      if (!initialFlow) {
+        await this.completeHandoffFlow(
           mainThread,
           target,
           issue,
@@ -182,36 +198,59 @@ export class AgentRunner {
           workspace.branchName,
           workspace.mergeConflictContext,
           runtimeRules.text,
-          'implement',
-          mainThreadInitialTurn,
-          selfReviewFeedback,
-          null,
+          existingThreadId,
+          viewerLogin,
+          workspace.path,
+          'handoff-update',
+          false,
           signal,
         );
 
-        const reviewBaseline = await captureWorktreeFingerprint(workspace.path);
-        const reviewResult = await this.runSelfReview(
+        this.logger.info('codex run completed after phased handoff', {
+          repo: target.fullName,
+          issue: issue.identifier,
+          usage: latestTurn.usage ?? undefined,
+          finalResponse: latestTurn.finalResponse.slice(0, 500),
+        });
+
+        return {
+          branchName: workspace.branchName,
+          threadId: mainThread.id ?? existingThreadId,
+        };
+      }
+
+      await this.completeHandoffFlow(
+        mainThread,
+        target,
+        issue,
+        context,
+        workspace.branchName,
+        workspace.mergeConflictContext,
+        runtimeRules.text,
+        existingThreadId,
+        viewerLogin,
+        workspace.path,
+        'handoff-draft',
+        true,
+        signal,
+      );
+
+      for (let reviewRound = 1; reviewRound <= MAX_SELF_REVIEW_ROUNDS; reviewRound += 1) {
+        const reviewResult = await this.runReadOnlySelfReview(
           target,
           issue,
           context,
           workspace.branchName,
           threadOptions,
-          signal,
-        );
-        await ensureWorktreeUnchanged(
           workspace.path,
-          reviewBaseline,
-          'self-review',
-          workspace.branchName,
           mainThread.id ?? existingThreadId,
+          signal,
         );
 
         if (reviewResult.outcome === 'pass') {
-          selfReviewFeedback = null;
           break;
         }
 
-        selfReviewFeedback = reviewResult.findings;
         this.logger.info('self-review requested follow-up changes', {
           repo: target.fullName,
           issue: issue.identifier,
@@ -227,15 +266,7 @@ export class AgentRunner {
             reviewResult.findings,
           );
         }
-      }
 
-      const snapshotBeforeHandoff = await inspectWorkspaceState(target, workspace.path, workspace.branchName);
-      const shouldRequirePullRequest =
-        snapshotBeforeHandoff.hasUncommittedChanges || snapshotBeforeHandoff.commitsAheadOfDefault > 0;
-
-      let handoffRequirements: string | null = null;
-
-      for (let handoffAttempt = 1; handoffAttempt <= MAX_HANDOFF_TURNS; handoffAttempt += 1) {
         latestTurn = await this.runMainPhase(
           mainThread,
           target,
@@ -244,55 +275,55 @@ export class AgentRunner {
           workspace.branchName,
           workspace.mergeConflictContext,
           runtimeRules.text,
-          'handoff',
-          mainThreadInitialTurn,
+          'fix',
+          false,
+          reviewResult.findings,
           null,
-          handoffRequirements,
           signal,
         );
 
-        const handoff = await inspectHandoff(target, workspace.path, workspace.branchName, shouldRequirePullRequest);
-        await this.ensureBranchPullRequestAssignedToViewer(target, workspace.path, workspace.branchName, viewerLogin);
-
-        if (handoff.complete) {
-          this.logger.info('codex run completed after handoff verification', {
-            repo: target.fullName,
-            issue: issue.identifier,
-            usage: latestTurn.usage ?? undefined,
-            finalResponse: latestTurn.finalResponse.slice(0, 500),
-          });
-
-          return {
-            branchName: workspace.branchName,
-            threadId: mainThread.id ?? existingThreadId,
-          };
-        }
-
-        handoffRequirements = handoff.summary;
-
-        this.logger.warn('handoff verification failed; continuing same thread', {
-          repo: target.fullName,
-          issue: issue.identifier,
-          handoffAttempt,
-          handoffRequirements: handoff.summary ?? undefined,
-        });
-
-        if (handoffAttempt === MAX_HANDOFF_TURNS) {
-          throw new AgentTurnError(
-            'Git handoff remained incomplete after the maximum handoff turns.',
-            workspace.branchName,
-            mainThread.id ?? existingThreadId,
-            handoff.summary,
-          );
-        }
+        await this.completeHandoffFlow(
+          mainThread,
+          target,
+          issue,
+          context,
+          workspace.branchName,
+          workspace.mergeConflictContext,
+          runtimeRules.text,
+          existingThreadId,
+          viewerLogin,
+          workspace.path,
+          'handoff-update',
+          false,
+          signal,
+        );
       }
 
-      throw new AgentTurnError(
-        'The phased agent run ended unexpectedly before completing handoff.',
-        workspace.branchName,
-        mainThread.id ?? existingThreadId,
-        latestTurn?.finalResponse ?? null,
-      );
+      const readyPullRequest = await markPullRequestReadyForReview(target, workspace.path, workspace.branchName);
+
+      if (!readyPullRequest) {
+        throw new AgentTurnError(
+          'Initial flow completed without a draft pull request that could be marked ready for review.',
+          workspace.branchName,
+          mainThread.id ?? existingThreadId,
+          'Expected a draft pull request to exist before the ready step.',
+        );
+      }
+
+      await this.ensureBranchPullRequestAssignedToViewer(target, workspace.path, workspace.branchName, viewerLogin);
+
+      this.logger.info('codex run completed after phased handoff', {
+        repo: target.fullName,
+        issue: issue.identifier,
+        usage: latestTurn?.usage ?? undefined,
+        finalResponse: latestTurn?.finalResponse.slice(0, 500) ?? undefined,
+        readyPullRequest: readyPullRequest.url,
+      });
+
+      return {
+        branchName: workspace.branchName,
+        threadId: mainThread.id ?? existingThreadId,
+      };
     } catch (error) {
       if (!signal.aborted) {
         await this.ensureBranchPullRequestAssignedToViewer(target, workspace.path, workspace.branchName, viewerLogin);
@@ -300,6 +331,41 @@ export class AgentRunner {
 
       throw error;
     }
+  }
+
+  private async runReadOnlyMainPhase(
+    thread: Thread,
+    target: RepoTarget,
+    issue: GitHubIssue,
+    context: AgentContext,
+    workspacePath: string,
+    branchName: string,
+    mergeConflictContext: string | null,
+    runtimeRulesText: string,
+    phase: Extract<MainThreadPhase, 'investigate' | 'diagnose'>,
+    initialThreadTurn: boolean,
+    threadId: string | null,
+    signal: AbortSignal,
+  ) {
+    const baseline = await captureWorktreeFingerprint(workspacePath);
+    const turn = await this.runMainPhase(
+      thread,
+      target,
+      issue,
+      context,
+      branchName,
+      mergeConflictContext,
+      runtimeRulesText,
+      phase,
+      initialThreadTurn,
+      null,
+      null,
+      signal,
+    );
+
+    await ensureWorktreeUnchanged(workspacePath, baseline, phase, branchName, threadId);
+
+    return turn;
   }
 
   private async runMainPhase(
@@ -342,32 +408,102 @@ export class AgentRunner {
     );
   }
 
+  private async runReadOnlySelfReview(
+    target: RepoTarget,
+    issue: GitHubIssue,
+    context: AgentContext,
+    branchName: string,
+    threadOptions: ThreadOptions,
+    workspacePath: string,
+    mainThreadId: string | null,
+    signal: AbortSignal,
+  ) {
+    const reviewBaseline = await captureWorktreeFingerprint(workspacePath);
+    const reviewResult = await this.runSelfReview(target, issue, context, branchName, threadOptions, signal);
+
+    await ensureWorktreeUnchanged(workspacePath, reviewBaseline, 'self-review', branchName, mainThreadId);
+    return reviewResult;
+  }
+
   private async runSelfReview(
     target: RepoTarget,
     issue: GitHubIssue,
     context: AgentContext,
     branchName: string,
-    threadOptions: ConstructorParameters<typeof Codex>[0] extends never
-      ? never
-      : {
-          workingDirectory: string;
-          model: AppConfig['codex']['model'];
-          sandboxMode: AppConfig['codex']['sandboxMode'];
-          approvalPolicy: AppConfig['codex']['approvalPolicy'];
-          modelReasoningEffort: AppConfig['codex']['modelReasoningEffort'];
-        },
+    threadOptions: ThreadOptions,
     signal: AbortSignal,
   ): Promise<SelfReviewResult> {
     const codex = new Codex();
     const reviewThread = codex.startThread(threadOptions);
-
     const reviewTurn = await runTurn(
       reviewThread,
       buildSelfReviewPrompt({ target, issue, context, branchName }),
       signal,
       branchName,
     );
+
     return parseSelfReviewResult(reviewTurn.finalResponse);
+  }
+
+  private async completeHandoffFlow(
+    thread: Thread,
+    target: RepoTarget,
+    issue: GitHubIssue,
+    context: AgentContext,
+    branchName: string,
+    mergeConflictContext: string | null,
+    runtimeRulesText: string,
+    existingThreadId: string | null,
+    viewerLogin: string,
+    workspacePath: string,
+    phase: Extract<MainThreadPhase, 'handoff-draft' | 'handoff-update'>,
+    requireDraftPullRequest: boolean,
+    signal: AbortSignal,
+  ) {
+    let handoffRequirements: string | null = null;
+
+    for (let handoffAttempt = 1; handoffAttempt <= MAX_HANDOFF_TURNS; handoffAttempt += 1) {
+      await this.runMainPhase(
+        thread,
+        target,
+        issue,
+        context,
+        branchName,
+        mergeConflictContext,
+        runtimeRulesText,
+        phase,
+        false,
+        null,
+        handoffRequirements,
+        signal,
+      );
+
+      const handoff = await inspectHandoff(target, workspacePath, branchName, requireDraftPullRequest);
+      await this.ensureBranchPullRequestAssignedToViewer(target, workspacePath, branchName, viewerLogin);
+
+      if (handoff.complete) {
+        return;
+      }
+
+      handoffRequirements = handoff.summary;
+
+      this.logger.warn('handoff verification failed; continuing same thread', {
+        repo: target.fullName,
+        issue: issue.identifier,
+        phase,
+        handoffAttempt,
+        handoffRequirements: handoff.summary ?? undefined,
+      });
+
+      if (handoffAttempt === MAX_HANDOFF_TURNS) {
+        throw new AgentTurnError(
+          'Git handoff remained incomplete after the maximum handoff turns.',
+          branchName,
+          thread.id ?? existingThreadId,
+          handoff.summary,
+        );
+      }
+    }
   }
 
   private async ensureBranchPullRequestAssignedToViewer(
@@ -412,7 +548,7 @@ async function inspectHandoff(
   target: RepoTarget,
   workspacePath: string,
   branchName: string,
-  requirePullRequest: boolean,
+  requireDraftPullRequest: boolean,
 ): Promise<HandoffInspection> {
   const snapshot = await inspectWorkspaceState(target, workspacePath, branchName);
   const missing: string[] = [];
@@ -423,12 +559,20 @@ async function inspectHandoff(
     );
   }
 
-  if (snapshot.commitsAheadOfDefault > 0 && !snapshot.hasRemoteBranch) {
+  if (snapshot.commitsAheadOfRemote > 0) {
     missing.push('The branch has local commits that have not been pushed to origin yet.');
   }
 
-  if (requirePullRequest && !snapshot.pullRequest) {
+  if (!snapshot.hasRemoteBranch) {
+    missing.push('The branch does not exist on origin yet.');
+  }
+
+  if (!snapshot.pullRequest) {
     missing.push('There is still no open pull request for this branch.');
+  } else if (requireDraftPullRequest && !snapshot.pullRequest.isDraft) {
+    missing.push(
+      'The initial handoff requires a draft pull request, but the current pull request is already open for review.',
+    );
   }
 
   return {
@@ -442,14 +586,24 @@ async function inspectWorkspaceState(
   workspacePath: string,
   branchName: string,
 ): Promise<WorkspaceSnapshot> {
-  const [statusResult, aheadResult, remoteBranchResult, pullRequest] = await Promise.all([
+  const remoteBranchResult = await runShell(
+    ['git', 'ls-remote', '--exit-code', '--heads', 'origin', shellEscape(branchName)].join(' '),
+    {
+      cwd: workspacePath,
+    },
+  );
+
+  const hasRemoteBranch = remoteBranchResult.exitCode === 0;
+
+  const [statusResult, aheadResult, pullRequest] = await Promise.all([
     runShell('git status --porcelain', { cwd: workspacePath }),
-    runShell(['git', 'rev-list', '--count', `${shellEscape(`origin/${target.defaultBranch}`)}..HEAD`].join(' '), {
-      cwd: workspacePath,
-    }),
-    runShell(['git', 'ls-remote', '--exit-code', '--heads', 'origin', shellEscape(branchName)].join(' '), {
-      cwd: workspacePath,
-    }),
+    hasRemoteBranch
+      ? runShell(['git', 'rev-list', '--count', `${shellEscape(`origin/${branchName}`)}..HEAD`].join(' '), {
+          cwd: workspacePath,
+        })
+      : runShell(['git', 'rev-list', '--count', `${shellEscape(`origin/${target.defaultBranch}`)}..HEAD`].join(' '), {
+          cwd: workspacePath,
+        }),
     findOpenPullRequestForBranch(target, workspacePath, branchName),
   ]);
 
@@ -457,8 +611,8 @@ async function inspectWorkspaceState(
 
   return {
     hasUncommittedChanges: statusResult.exitCode === 0 && statusResult.stdout.trim().length > 0,
-    commitsAheadOfDefault: Number.isFinite(commitsAhead) ? commitsAhead : 0,
-    hasRemoteBranch: remoteBranchResult.exitCode === 0,
+    commitsAheadOfRemote: Number.isFinite(commitsAhead) ? commitsAhead : 0,
+    hasRemoteBranch,
     pullRequest,
   };
 }
@@ -490,6 +644,33 @@ async function ensureWorktreeUnchanged(
     threadId,
     trimForPrompt(after.statusPorcelain || '(empty status)', 1200),
   );
+}
+
+async function markPullRequestReadyForReview(
+  target: RepoTarget,
+  workspacePath: string,
+  branchName: string,
+): Promise<BranchPullRequest | null> {
+  const pullRequest = await findOpenPullRequestForBranch(target, workspacePath, branchName);
+
+  if (!pullRequest) {
+    return null;
+  }
+
+  if (!pullRequest.isDraft) {
+    return pullRequest;
+  }
+
+  const result = await runShell(
+    ['gh', 'pr', 'ready', String(pullRequest.number), '--repo', target.fullName].map(shellEscape).join(' '),
+    { cwd: workspacePath },
+  );
+
+  if (result.exitCode !== 0) {
+    return null;
+  }
+
+  return findOpenPullRequestForBranch(target, workspacePath, branchName);
 }
 
 function parseSelfReviewResult(output: string): SelfReviewResult {
@@ -544,7 +725,7 @@ async function findOpenPullRequestForBranch(
       '--head',
       branchName,
       '--json',
-      'number,url,assignees',
+      'number,url,isDraft,assignees',
     ]
       .map(shellEscape)
       .join(' '),
@@ -558,6 +739,7 @@ async function findOpenPullRequestForBranch(
   const pullRequests = JSON.parse(result.stdout) as Array<{
     number?: number;
     url?: string | null;
+    isDraft?: boolean;
     assignees?: Array<{ login?: string | null }>;
   }>;
 
@@ -569,6 +751,7 @@ async function findOpenPullRequestForBranch(
   return {
     number: pullRequest.number,
     url: pullRequest.url,
+    isDraft: Boolean(pullRequest.isDraft),
     assignees: (pullRequest.assignees ?? [])
       .map((assignee) => assignee.login?.trim().toLowerCase() || '')
       .filter(Boolean),
@@ -619,7 +802,6 @@ function summarizeFailureContext(items: ThreadItem[]) {
       }
 
       const output = item.aggregated_output.trim();
-
       return [[`$ ${item.command}`, output ? trimForPrompt(output, 1200) : '(no output)'].join('\n')];
     })
     .slice(-2);

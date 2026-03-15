@@ -20,6 +20,7 @@ Primary responsibilities:
 - If you leave a comment or resolve review threads, mention the exact action you completed in the final summary.
 - When useful, leave a concise issue comment or PR comment describing what changed, what was validated, and any remaining blockers.
 - Assign any pull request you create or update to yourself if it is not already assigned to you.
+- In the initial flow, create a draft pull request during handoff and leave the final Ready for Review transition to the CLI.
 - Express handoff through the repository's issue, pull request, assignment, review-thread resolution, and comments.
 
 Working rules:

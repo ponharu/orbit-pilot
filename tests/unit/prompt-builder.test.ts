@@ -34,14 +34,14 @@ describe('buildMainThreadPrompt', () => {
       mergeConflictContext: 'merge conflict',
       initialThreadTurn: false,
       runtimeRulesText: 'runtime rules',
-      phase: 'handoff',
+      phase: 'handoff-draft',
       selfReviewFeedback: 'Internal reviewer requested a missing regression test.',
       handoffRequirements: 'There is still no open pull request for this branch.',
     });
 
     expect(prompt).toContain('Continuation guidance:');
     expect(prompt).not.toContain('Runtime rules:');
-    expect(prompt).toContain('Phase: handoff');
+    expect(prompt).toContain('Phase: handoff-draft');
     expect(prompt).toContain('GitHub review feedback:');
     expect(prompt).toContain('Internal self-review feedback:');
     expect(prompt).toContain('Merge conflict context:');

@@ -8,7 +8,7 @@ It is intentionally small:
 
 - issue routing is based on assignee only
 - repository discovery is based on owners plus an exclude list
-- GitHub writes are handled by the Codex agent
+- Most GitHub writes are handled by the Codex agent, while the CLI verifies handoff and flips initial draft PRs to Ready for Review
 - runtime behavior is enforced by built-in rules, while repository-specific guidance can live in `AGENTS.md`
 
 ## What It Does
@@ -85,9 +85,11 @@ sandboxMode = "workspace-write"
 - Each issue gets its own managed branch, usually `${issueNo}-orbit-pilot`
 - Before review- or CI-triggered re-runs, the latest default branch is merged into the managed branch
 - If that merge conflicts, Codex is asked to resolve the conflict in place
-- The main Codex thread runs in phases: investigate or diagnose, implement, and handoff
+- Initial runs follow `investigate -> implement -> handoff-draft -> self-review(loop) -> ready`
+- Review and CI follow-up runs follow `diagnose -> fix -> handoff-update`
 - Internal self-review runs in a separate read-only Codex thread and loops back into the main implementation thread when fixes are needed
-- The runner verifies handoff after each run: clean worktree, pushed branch, and open pull request when code changes were made
+- The runner verifies handoff after each run: clean worktree, pushed branch, and an open PR, plus a draft PR for the first handoff
+- After the initial self-review passes, the CLI marks the draft PR as Ready for Review
 - The runner checks the branch PR after each handoff turn and self-assigns it if needed
 
 ## Runtime Rules
@@ -99,6 +101,7 @@ Those rules cover behavior that should not be overridden by repositories, such a
 - self-assigning PRs
 - resolving only the review threads that were actually fixed
 - verifying GitHub writes before claiming success
+- leaving the initial PR in Draft for the CLI to mark Ready after internal review passes
 - respecting phase boundaries, including read-only investigation and self-review turns
 
 Repository-specific guidance can live in `AGENTS.md` at the root of each repository, for example:
