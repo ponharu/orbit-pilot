@@ -1,28 +1,37 @@
 import { describe, expect, test } from 'bun:test';
-import { buildContinuationPrompt, buildInitialPrompt } from '../../src/core/prompt-builder';
+import { buildContinuationPrompt, buildIssuePrompt, buildRuntimeRulesPrompt } from '../../src/core/prompt-builder';
 import type { AgentContext, GitHubIssue, RepoTarget } from '../../src/core/types';
 
-describe('buildInitialPrompt', () => {
-  test('includes runtime rules and issue body on the first turn', () => {
-    const prompt = buildInitialPrompt({
+describe('buildRuntimeRulesPrompt', () => {
+  test('asks for an exact yes acknowledgement', () => {
+    const prompt = buildRuntimeRulesPrompt('runtime rules');
+
+    expect(prompt).toContain('Runtime rules:');
+    expect(prompt).toContain('runtime rules');
+    expect(prompt).toContain('reply with exactly `yes`');
+  });
+});
+
+describe('buildIssuePrompt', () => {
+  test('includes the issue body after the runtime rules are established', () => {
+    const prompt = buildIssuePrompt({
       target,
       issue,
       context,
       branchName: '42-orbit-pilot',
       mergeConflictContext: null,
-      runtimeRulesText: 'runtime rules',
       handoffRequirements: null,
     });
 
-    expect(prompt).toContain('Runtime rules:');
-    expect(prompt).toContain('runtime rules');
+    expect(prompt).toContain('Task:');
+    expect(prompt).toContain('runtime rules for this thread are already established');
     expect(prompt).toContain('Issue body:');
-    expect(prompt).not.toContain('Run reason:');
+    expect(prompt).not.toContain('Runtime rules:');
   });
 });
 
 describe('buildContinuationPrompt', () => {
-  test('uses short continuation guidance and includes remaining handoff work', () => {
+  test('uses short continuation guidance and includes only the remaining work', () => {
     const prompt = buildContinuationPrompt({
       target,
       issue,
@@ -32,14 +41,13 @@ describe('buildContinuationPrompt', () => {
       },
       branchName: '42-orbit-pilot',
       mergeConflictContext: 'merge conflict',
-      runtimeRulesText: 'runtime rules',
       handoffRequirements: 'There is still no open pull request for this branch.',
     });
 
     expect(prompt).toContain('Continuation guidance:');
     expect(prompt).not.toContain('Runtime rules:');
-    expect(prompt).toContain('The previous turn completed, but the task is not finished yet.');
     expect(prompt).toContain('Additional context:');
+    expect(prompt).toContain('Continue the remaining work while following the runtime rules already established');
     expect(prompt).toContain('Merge conflict context:');
     expect(prompt).toContain('Remaining handoff work:');
   });

@@ -28,7 +28,7 @@ export type RepoTarget = {
 export type RunMetadata = {
   issueNumber: number;
   attempt: number;
-  reason: 'poll' | 'review';
+  reason: 'initial' | 'review';
 };
 
 export type AgentContext = {

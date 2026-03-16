@@ -6,14 +6,23 @@ type PromptInput = {
   context: AgentContext;
   branchName: string;
   mergeConflictContext: string | null;
-  runtimeRulesText: string;
   handoffRequirements: string | null;
 };
 
-export function buildInitialPrompt(input: PromptInput) {
-  const sections = [
+export function buildRuntimeRulesPrompt(runtimeRulesText: string) {
+  return [
     'Runtime rules:',
-    input.runtimeRulesText,
+    runtimeRulesText,
+    '',
+    'If you understand and will follow these runtime rules in this thread, reply with exactly `yes`.',
+  ].join('\n');
+}
+
+export function buildIssuePrompt(input: PromptInput) {
+  const sections = [
+    'Task:',
+    '- The runtime rules for this thread are already established.',
+    '- Implement this issue while following those runtime rules.',
     '',
     'Execution context:',
     `Repository: ${input.target.fullName}`,
@@ -36,8 +45,8 @@ export function buildContinuationPrompt(input: PromptInput) {
     `- Continue issue #${input.issue.number} in ${input.target.fullName}.`,
     `- Work on branch ${input.branchName}.`,
     '- The previous turn completed, but the task is not finished yet.',
-    '- The runtime rules and original task are already present in this thread, so do not restate them.',
-    '- Resume from the current workspace state and focus only on the remaining work.',
+    '- The runtime rules and original task are already present in this thread.',
+    '- Resume from the current workspace state and continue only the remaining work.',
   ];
 
   appendContextSections(sections, input.context, input.mergeConflictContext, input.handoffRequirements);
@@ -51,7 +60,13 @@ function appendContextSections(
   handoffRequirements: string | null,
 ) {
   if (context.continuationContext) {
-    sections.push('', 'Additional context:', context.continuationContext);
+    sections.push(
+      '',
+      'Additional context:',
+      context.continuationContext,
+      '',
+      'Continue the remaining work while following the runtime rules already established in this thread.',
+    );
   }
 
   if (mergeConflictContext) {

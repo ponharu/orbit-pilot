@@ -45,6 +45,7 @@ type LinkedPullRequestQuery = {
             __typename?: string;
             number?: number;
             updatedAt?: string;
+            state?: string;
           } | null;
         } | null>;
       };
@@ -112,6 +113,16 @@ type PullRequestReference = {
   number: number;
   updatedAt: string;
 };
+
+export type IssueSignal =
+  | {
+      kind: 'initial';
+      revision: string;
+    }
+  | {
+      kind: 'review';
+      revision: string;
+    };
 
 type PullRequestReviewSnapshot = {
   number: number;
@@ -224,18 +235,16 @@ export class GitHubClient {
   }
 
   async getIssueSignal(target: RepoTarget, issue: GitHubIssue) {
-    const issueTimestamp = issue.updatedAt;
-
-    const pullRequests = await this.listLinkedPullRequests(target, issue.number);
+    const pullRequests = await this.listLinkedOpenPullRequests(target, issue.number);
 
     if (pullRequests.length === 0) {
       return {
-        revision: issueTimestamp,
-        reason: 'poll' as const,
+        kind: 'initial' as const,
+        revision: issue.updatedAt,
       };
     }
 
-    let reviewTimestamp = issueTimestamp;
+    let reviewTimestamp = pullRequests[0]?.updatedAt ?? issue.updatedAt;
 
     for (const pullRequest of pullRequests) {
       const signalTimestamp = await this.getPullRequestSignalTimestamp(target, pullRequest);
@@ -245,8 +254,8 @@ export class GitHubClient {
     }
 
     return {
+      kind: 'review' as const,
       revision: reviewTimestamp,
-      reason: reviewTimestamp > issueTimestamp ? ('review' as const) : ('poll' as const),
     };
   }
 
@@ -259,7 +268,7 @@ export class GitHubClient {
     target: RepoTarget,
     issue: GitHubIssue,
   ): Promise<{ prNumber: number; feedback: string } | null> {
-    const pullRequests = await this.listLinkedPullRequests(target, issue.number);
+    const pullRequests = await this.listLinkedOpenPullRequests(target, issue.number);
 
     if (pullRequests.length === 0) {
       return null;
@@ -288,7 +297,7 @@ export class GitHubClient {
     target: RepoTarget,
     issue: GitHubIssue,
   ): Promise<{ prNumber: number; summary: string } | null> {
-    const pullRequests = await this.listLinkedPullRequests(target, issue.number);
+    const pullRequests = await this.listLinkedOpenPullRequests(target, issue.number);
 
     if (pullRequests.length === 0) {
       return null;
@@ -304,7 +313,7 @@ export class GitHubClient {
     return null;
   }
 
-  private async listLinkedPullRequests(target: RepoTarget, issueNumber: number): Promise<PullRequestReference[]> {
+  private async listLinkedOpenPullRequests(target: RepoTarget, issueNumber: number): Promise<PullRequestReference[]> {
     const result = await this.graphqlQuery<LinkedPullRequestQuery>(
       `
         query LinkedPullRequests($owner: String!, $repo: String!, $issueNumber: Int!) {
@@ -318,6 +327,7 @@ export class GitHubClient {
                       ... on PullRequest {
                         number
                         updatedAt
+                        state
                       }
                     }
                   }
@@ -339,7 +349,12 @@ export class GitHubClient {
 
     for (const node of references) {
       const source = node?.source;
-      if (source?.__typename !== 'PullRequest' || typeof source.number !== 'number' || !source.updatedAt) {
+      if (
+        source?.__typename !== 'PullRequest' ||
+        typeof source.number !== 'number' ||
+        !source.updatedAt ||
+        source.state !== 'OPEN'
+      ) {
         continue;
       }
 

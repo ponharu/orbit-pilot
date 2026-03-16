@@ -96,7 +96,7 @@ export class RepositoryRuntime {
     for (const issue of issues) {
       const signal = await this.client.getIssueSignal(this.target, issue);
 
-      if (signal.reason === 'review' && this.shouldRouteIssue(issue)) {
+      if (signal.kind === 'review' && this.shouldRouteIssue(issue)) {
         this.logger.info('dispatching review-triggered issue', {
           repo: this.target.fullName,
           issue: issue.identifier,
@@ -109,7 +109,7 @@ export class RepositoryRuntime {
     }
   }
 
-  private async reconcile(trigger: RunMetadata['reason']) {
+  private async reconcile(trigger: 'poll') {
     if (this.disposed) {
       return;
     }
@@ -203,7 +203,7 @@ export class RepositoryRuntime {
       this.claimed.has(issue.number) ||
       this.running.has(issue.number)
     ) {
-      return { issue, shouldDispatch: false, revision: issue.updatedAt, reason: 'poll' as const };
+      return { issue, shouldDispatch: false, revision: issue.updatedAt, reason: 'initial' as const };
     }
 
     const signal = await this.client.getIssueSignal(this.target, issue);
@@ -211,9 +211,9 @@ export class RepositoryRuntime {
 
     return {
       issue,
-      shouldDispatch: previous === undefined || signal.revision > previous,
+      shouldDispatch: signal.kind === 'initial' ? true : previous === undefined || signal.revision > previous,
       revision: signal.revision,
-      reason: signal.reason,
+      reason: signal.kind,
     };
   }
 
@@ -353,14 +353,18 @@ export class RepositoryRuntime {
 
     const delayMs = Math.min(10_000 * 2 ** (attempt - 1), 300_000);
     const timer = setTimeout(() => {
-      this.retries.delete(issue.number);
-      this.claimed.delete(issue.number);
+      void (async () => {
+        this.retries.delete(issue.number);
+        this.claimed.delete(issue.number);
 
-      if (this.running.size < this.config.maxConcurrentRunsPerRepo) {
-        this.dispatchIssue(issue, { issueNumber: issue.number, attempt, reason: 'poll' }, issue.updatedAt);
-      } else {
-        this.reconcileSoon();
-      }
+        if (this.running.size < this.config.maxConcurrentRunsPerRepo) {
+          const savedState = await this.stateStore.readState(this.target, issue.number);
+          const reason = savedState?.lastTrigger === 'review' ? 'review' : 'initial';
+          this.dispatchIssue(issue, { issueNumber: issue.number, attempt, reason }, issue.updatedAt);
+        } else {
+          this.reconcileSoon();
+        }
+      })();
     }, delayMs);
 
     this.retries.set(issue.number, { attempt, timer });

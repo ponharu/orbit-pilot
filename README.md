@@ -81,11 +81,14 @@ sandboxMode = "workspace-write"
 
 - Only open issues assigned to the current `gh` user are eligible
 - An issue stops running when it is closed or unassigned
-- Review-triggered re-runs require a linked PR discovered through an issue timeline cross reference
+- The initial run starts when an assigned open issue has no linked open PR
+- Continuation runs happen when a linked open PR receives new review, comment, or CI signal
+- Linked PR discovery is based on an issue timeline cross reference
 - Each issue gets its own managed branch, usually `${issueNo}-orbit-pilot`
 - Before review- or CI-triggered re-runs, the latest default branch is merged into the managed branch
 - If that merge conflicts, Codex is asked to resolve the conflict in place
-- The first turn gets the full issue and runtime rules, then later turns use short continuation prompts in the same Codex thread
+- A new thread starts with a runtime-rules acknowledgement turn, then receives the actual issue
+- Later turns use short continuation prompts in the same Codex thread
 - In other words, `orbit-pilot` does not re-plan a fixed workflow on every turn; it keeps one thread alive and repeatedly says "continue the remaining work" with only the newest tracker context and handoff gaps
 - Review-triggered and CI-triggered reruns resume the existing thread instead of starting a new one
 - The runner verifies handoff after each turn: clean worktree, pushed branch, and an open PR

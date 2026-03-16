@@ -2,7 +2,7 @@ import { Codex, type Thread, type ThreadItem } from '@openai/codex-sdk';
 import type { AppConfig } from '../config';
 import type { AgentContext, GitHubIssue, Logger, RepoTarget } from './types';
 import { ensureBranchPullRequestAssignedToViewer, inspectHandoff } from './handoff';
-import { buildContinuationPrompt, buildInitialPrompt } from './prompt-builder';
+import { buildContinuationPrompt, buildIssuePrompt, buildRuntimeRulesPrompt } from './prompt-builder';
 import { loadRuntimeRules } from './runtime-rules-loader';
 import { WorkspaceManager } from './workspace-manager';
 
@@ -118,6 +118,28 @@ export class AgentRunner {
     let latestTurn: TurnResult | null = null;
 
     try {
+      if (!existingThreadId) {
+        this.logger.info('starting runtime rules acknowledgement turn', {
+          repo: target.fullName,
+          issue: issue.identifier,
+        });
+
+        const rulesTurn = await runTurn(
+          thread,
+          buildRuntimeRulesPrompt(runtimeRules.text),
+          signal,
+          workspace.branchName,
+        );
+        if (rulesTurn.finalResponse.trim().toLowerCase() !== 'yes') {
+          throw new AgentTurnError(
+            'The runtime-rules acknowledgement turn did not return exactly `yes`.',
+            workspace.branchName,
+            thread.id ?? existingThreadId,
+            trimForPrompt(rulesTurn.finalResponse, 600),
+          );
+        }
+      }
+
       for (let turnNumber = 1; turnNumber <= MAX_AGENT_TURNS; turnNumber += 1) {
         const initialTurn = turnNumber === 1 && !existingThreadId;
 
@@ -129,13 +151,12 @@ export class AgentRunner {
         });
 
         const prompt = initialTurn
-          ? buildInitialPrompt({
+          ? buildIssuePrompt({
               target,
               issue,
               context,
               branchName: workspace.branchName,
               mergeConflictContext: workspace.mergeConflictContext,
-              runtimeRulesText: runtimeRules.text,
               handoffRequirements,
             })
           : buildContinuationPrompt({
@@ -144,7 +165,6 @@ export class AgentRunner {
               context,
               branchName: workspace.branchName,
               mergeConflictContext: workspace.mergeConflictContext,
-              runtimeRulesText: runtimeRules.text,
               handoffRequirements,
             });
 
