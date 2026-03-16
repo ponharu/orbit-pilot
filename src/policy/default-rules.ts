@@ -20,7 +20,7 @@ Primary responsibilities:
 - If you leave a comment or resolve review threads, mention the exact action you completed in the final summary.
 - When useful, leave a concise issue comment or PR comment describing what changed, what was validated, and any remaining blockers.
 - Assign any pull request you create or update to yourself if it is not already assigned to you.
-- In the initial flow, create a draft pull request during handoff and leave the final Ready for Review transition to the CLI.
+- Complete the Git handoff before ending the task: commit the intended changes, push the branch, and create or update the pull request.
 - Express handoff through the repository's issue, pull request, assignment, review-thread resolution, and comments.
 
 Working rules:
@@ -30,7 +30,7 @@ Working rules:
 - If there is merge conflict context, resolve it first.
 - If CI failures are provided, use them as the primary debugging signal.
 - If review feedback is provided, address it before unrelated cleanup.
-- Respect the current phase instructions. Some phases are investigation-only or review-only and must not edit files.
+- If the previous turn already changed code, use the next turns to finish the remaining handoff instead of restarting from scratch.
 
 Finish each turn with a short summary of:
 

@@ -1,6 +1,6 @@
 import type { AppConfig } from '../config';
 import { GitHubClient } from '../github/client';
-import type { AgentContext, AgentState, GitHubIssue, Logger, RepoTarget, RunMetadata, WorkspaceState } from './types';
+import type { AgentContext, GitHubIssue, Logger, RepoTarget, RunMetadata, WorkspaceState } from './types';
 import { AgentRunner, AgentTurnError, type AgentRunHandle } from './agent-runner';
 import { StateStore } from './state-store';
 
@@ -394,45 +394,31 @@ export class RepositoryRuntime {
     metadata: RunMetadata,
     existingState: WorkspaceState | null,
   ): Promise<AgentContext> {
-    const state = resolveAgentState(issue, metadata, existingState);
+    const segments: string[] = [];
     const failureContext =
       metadata.attempt > 1 ? (existingState?.lastFailureContext ?? existingState?.lastError ?? null) : null;
 
-    if (metadata.reason !== 'review') {
-      return {
-        state,
-        reviewFeedback: null,
-        ciFailures: null,
-        failureContext,
-      };
+    if (failureContext) {
+      segments.push(`Previous failure context:\n${failureContext}`);
     }
 
-    const [reviewFeedback, ciFailureContext] = await Promise.all([
-      this.client.getReviewFeedback(this.target, issue),
-      this.client.getCiFailureContext(this.target, issue),
-    ]);
+    if (metadata.reason === 'review') {
+      const [reviewFeedback, ciFailureContext] = await Promise.all([
+        this.client.getReviewFeedback(this.target, issue),
+        this.client.getCiFailureContext(this.target, issue),
+      ]);
+
+      if (reviewFeedback) {
+        segments.push(`GitHub review feedback for PR #${reviewFeedback.prNumber}:\n${reviewFeedback.feedback}`);
+      }
+
+      if (ciFailureContext) {
+        segments.push(`CI failures for PR #${ciFailureContext.prNumber}:\n${ciFailureContext.summary}`);
+      }
+    }
 
     return {
-      state,
-      reviewFeedback: reviewFeedback ? `PR #${reviewFeedback.prNumber}\n${reviewFeedback.feedback}` : null,
-      ciFailures: ciFailureContext ? `PR #${ciFailureContext.prNumber}\n${ciFailureContext.summary}` : null,
-      failureContext,
+      continuationContext: segments.length > 0 ? segments.join('\n\n') : null,
     };
   }
-}
-
-function resolveAgentState(
-  issue: GitHubIssue,
-  metadata: RunMetadata,
-  existingState: WorkspaceState | null,
-): AgentState {
-  if (metadata.reason === 'review') {
-    return 'review';
-  }
-
-  if (metadata.attempt > 1 || existingState?.lastFailureContext || existingState?.lastError) {
-    return 'rework';
-  }
-
-  return 'implement';
 }

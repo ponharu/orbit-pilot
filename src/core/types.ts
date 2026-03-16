@@ -25,8 +25,6 @@ export type RepoTarget = {
   defaultBranch: string;
 };
 
-export type AgentState = 'implement' | 'review' | 'rework';
-
 export type RunMetadata = {
   issueNumber: number;
   attempt: number;
@@ -34,10 +32,7 @@ export type RunMetadata = {
 };
 
 export type AgentContext = {
-  state: AgentState;
-  reviewFeedback: string | null;
-  ciFailures: string | null;
-  failureContext: string | null;
+  continuationContext: string | null;
 };
 
 export type WorkspaceState = {
