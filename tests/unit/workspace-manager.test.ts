@@ -85,6 +85,7 @@ describe('WorkspaceManager', () => {
     const workspace = await manager.prepareWorkspace(target, issue, remotePath, null);
     await updateRemoteRepository(tempDir, remotePath, 'main branch change');
     await writeFile(path.join(workspace.path, 'README.md'), 'local branch change\n', 'utf8');
+    await configureCommitIdentity(workspace.path);
     await git(workspace.path, 'git add README.md');
     await git(workspace.path, `git commit -m ${shellEscape('local change')}`);
     await git(workspace.path, 'git fetch origin');
@@ -111,6 +112,7 @@ describe('WorkspaceManager', () => {
     const workspace = await manager.prepareWorkspace(target, issue, remotePath, null);
     await updateRemoteRepository(tempDir, remotePath, 'main branch change');
     await writeFile(path.join(workspace.path, 'README.md'), 'local branch change\n', 'utf8');
+    await configureCommitIdentity(workspace.path);
     await git(workspace.path, 'git add README.md');
     await git(workspace.path, `git commit -m ${shellEscape('local change')}`);
     await git(workspace.path, 'git fetch origin');
@@ -243,6 +245,11 @@ async function runAllowFailure(command: string, cwd?: string) {
     stderr: stderr.trim(),
     exitCode,
   };
+}
+
+async function configureCommitIdentity(cwd: string) {
+  await run(`git -C ${shellEscape(cwd)} config user.name ${shellEscape('tester')}`);
+  await run(`git -C ${shellEscape(cwd)} config user.email ${shellEscape('tester@example.com')}`);
 }
 
 function shellEscape(value: string) {
