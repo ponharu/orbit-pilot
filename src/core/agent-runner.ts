@@ -36,6 +36,13 @@ type TurnResult = {
   usage: unknown;
 };
 
+type TurnLogContext = {
+  logger: Logger;
+  target: RepoTarget;
+  issue: GitHubIssue;
+  turnLabel: string;
+};
+
 type ThreadOptions = {
   workingDirectory: string;
   model: AppConfig['codex']['model'];
@@ -129,6 +136,12 @@ export class AgentRunner {
           buildRuntimeRulesPrompt(runtimeRules.text),
           signal,
           workspace.branchName,
+          {
+            logger: this.logger,
+            target,
+            issue,
+            turnLabel: 'runtime-rules',
+          },
         );
         if (rulesTurn.finalResponse.trim().toLowerCase() !== 'yes') {
           throw new AgentTurnError(
@@ -164,7 +177,12 @@ export class AgentRunner {
               branchName: workspace.branchName,
             });
 
-        latestTurn = await runTurn(thread, prompt, signal, workspace.branchName);
+        latestTurn = await runTurn(thread, prompt, signal, workspace.branchName, {
+          logger: this.logger,
+          target,
+          issue,
+          turnLabel: `turn-${turnNumber}`,
+        });
 
         const handoff = await inspectHandoff(target, workspace.path, workspace.branchName);
         await ensureBranchPullRequestAssignedToViewer(
@@ -221,7 +239,13 @@ export class AgentRunner {
   }
 }
 
-async function runTurn(thread: Thread, prompt: string, signal: AbortSignal, branchName: string): Promise<TurnResult> {
+async function runTurn(
+  thread: Thread,
+  prompt: string,
+  signal: AbortSignal,
+  branchName: string,
+  logContext: TurnLogContext,
+): Promise<TurnResult> {
   const { events } = await thread.runStreamed(prompt, { signal });
   const items: ThreadItem[] = [];
   let finalResponse = '';
@@ -230,6 +254,7 @@ async function runTurn(thread: Thread, prompt: string, signal: AbortSignal, bran
 
   for await (const event of events) {
     if (event.type === 'item.completed') {
+      logCompletedItem(event.item, logContext);
       items.push(event.item);
 
       if (event.item.type === 'agent_message') {
@@ -251,6 +276,32 @@ async function runTurn(thread: Thread, prompt: string, signal: AbortSignal, bran
   }
 
   return { items, finalResponse, usage };
+}
+
+function logCompletedItem(item: ThreadItem, context: TurnLogContext) {
+  const baseContext = {
+    repo: context.target.fullName,
+    issue: context.issue.identifier,
+    turn: context.turnLabel,
+  };
+
+  if (item.type === 'agent_message') {
+    context.logger.info('codex reasoning', {
+      ...baseContext,
+      text: trimForPrompt(item.text, 1000),
+    });
+    return;
+  }
+
+  if (item.type === 'command_execution') {
+    context.logger.info('codex command', {
+      ...baseContext,
+      command: item.command,
+      exitCode: item.exit_code,
+      status: item.status,
+      output: item.aggregated_output ? trimForPrompt(item.aggregated_output, 1500) : undefined,
+    });
+  }
 }
 
 function summarizeFailureContext(items: ThreadItem[]) {
