@@ -5,8 +5,6 @@ type PromptInput = {
   issue: GitHubIssue;
   context: AgentContext;
   branchName: string;
-  mergeConflictContext: string | null;
-  handoffRequirements: string | null;
 };
 
 export function buildRuntimeRulesPrompt(runtimeRulesText: string) {
@@ -21,8 +19,7 @@ export function buildRuntimeRulesPrompt(runtimeRulesText: string) {
 export function buildIssuePrompt(input: PromptInput) {
   const sections = [
     'Task:',
-    '- The runtime rules for this thread are already established.',
-    '- Implement this issue while following those runtime rules.',
+    '- Implement this issue while following the runtime rules for this thread.',
     '',
     'Execution context:',
     `Repository: ${input.target.fullName}`,
@@ -34,46 +31,25 @@ export function buildIssuePrompt(input: PromptInput) {
     input.issue.body.trim() || '(empty)',
   ];
 
-  appendContextSections(sections, input.context, input.mergeConflictContext, input.handoffRequirements);
+  appendContextSections(sections, input.context);
   return sections.join('\n');
 }
 
 export function buildContinuationPrompt(input: PromptInput) {
   const sections = [
-    'Continuation guidance:',
+    'Task:',
     '',
-    `- Continue issue #${input.issue.number} in ${input.target.fullName}.`,
-    `- Work on branch ${input.branchName}.`,
-    '- The previous turn completed, but the task is not finished yet.',
-    '- The runtime rules and original task are already present in this thread.',
-    '- Resume from the current workspace state and continue only the remaining work.',
+    `- Continue the remaining work for issue #${input.issue.number} in ${input.target.fullName}.`,
+    `- Use branch ${input.branchName}.`,
+    '- Use the current workspace state.',
   ];
 
-  appendContextSections(sections, input.context, input.mergeConflictContext, input.handoffRequirements);
+  appendContextSections(sections, input.context);
   return sections.join('\n');
 }
 
-function appendContextSections(
-  sections: string[],
-  context: AgentContext,
-  mergeConflictContext: string | null,
-  handoffRequirements: string | null,
-) {
+function appendContextSections(sections: string[], context: AgentContext) {
   if (context.continuationContext) {
-    sections.push(
-      '',
-      'Additional context:',
-      context.continuationContext,
-      '',
-      'Continue the remaining work while following the runtime rules already established in this thread.',
-    );
-  }
-
-  if (mergeConflictContext) {
-    sections.push('', 'Merge conflict context:', mergeConflictContext);
-  }
-
-  if (handoffRequirements) {
-    sections.push('', 'Remaining handoff work:', handoffRequirements);
+    sections.push('', 'Additional information:', context.continuationContext);
   }
 }

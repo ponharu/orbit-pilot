@@ -46,6 +46,11 @@ type LinkedPullRequestQuery = {
             number?: number;
             updatedAt?: string;
             state?: string;
+            url?: string;
+            headRefName?: string | null;
+            baseRefName?: string | null;
+            baseRefOid?: string | null;
+            mergeStateStatus?: string | null;
           } | null;
         } | null>;
       };
@@ -112,6 +117,11 @@ type ReviewThreadCommentNode = {
 type PullRequestReference = {
   number: number;
   updatedAt: string;
+  url: string;
+  headRefName: string | null;
+  baseRefName: string | null;
+  baseRefOid: string | null;
+  mergeStateStatus: string | null;
 };
 
 export type IssueSignal =
@@ -121,7 +131,7 @@ export type IssueSignal =
     }
   | {
       kind: 'review';
-      revision: string;
+      revision: string | null;
     };
 
 type PullRequestReviewSnapshot = {
@@ -244,18 +254,18 @@ export class GitHubClient {
       };
     }
 
-    let reviewTimestamp = pullRequests[0]?.updatedAt ?? issue.updatedAt;
+    const revisions: string[] = [];
 
     for (const pullRequest of pullRequests) {
-      const signalTimestamp = await this.getPullRequestSignalTimestamp(target, pullRequest);
-      if (signalTimestamp > reviewTimestamp) {
-        reviewTimestamp = signalTimestamp;
+      const signalRevision = await this.getPullRequestSignalRevision(target, pullRequest);
+      if (signalRevision) {
+        revisions.push(signalRevision);
       }
     }
 
     return {
       kind: 'review' as const,
-      revision: reviewTimestamp,
+      revision: revisions.length > 0 ? revisions.toSorted().join('|') : null,
     };
   }
 
@@ -313,6 +323,28 @@ export class GitHubClient {
     return null;
   }
 
+  async getMergeConflictContext(
+    target: RepoTarget,
+    issue: GitHubIssue,
+  ): Promise<{ prNumber: number; summary: string } | null> {
+    const pullRequests = await this.listLinkedOpenPullRequests(target, issue.number);
+
+    for (const pullRequest of pullRequests) {
+      if (pullRequest.mergeStateStatus !== 'DIRTY') {
+        continue;
+      }
+
+      const baseRef = pullRequest.baseRefName?.trim() || target.defaultBranch;
+      const headRef = pullRequest.headRefName?.trim() || `PR #${pullRequest.number}`;
+      return {
+        prNumber: pullRequest.number,
+        summary: `PR #${pullRequest.number} has merge conflicts with ${baseRef}. Bring ${baseRef} into ${headRef}, resolve the conflicts, rerun the relevant validation, push the branch, and update the existing pull request.`,
+      };
+    }
+
+    return null;
+  }
+
   private async listLinkedOpenPullRequests(target: RepoTarget, issueNumber: number): Promise<PullRequestReference[]> {
     const result = await this.graphqlQuery<LinkedPullRequestQuery>(
       `
@@ -328,6 +360,11 @@ export class GitHubClient {
                         number
                         updatedAt
                         state
+                        url
+                        headRefName
+                        baseRefName
+                        baseRefOid
+                        mergeStateStatus
                       }
                     }
                   }
@@ -353,6 +390,7 @@ export class GitHubClient {
         source?.__typename !== 'PullRequest' ||
         typeof source.number !== 'number' ||
         !source.updatedAt ||
+        !source.url ||
         source.state !== 'OPEN'
       ) {
         continue;
@@ -361,31 +399,38 @@ export class GitHubClient {
       pullRequests.set(source.number, {
         number: source.number,
         updatedAt: source.updatedAt,
+        url: source.url,
+        headRefName: source.headRefName?.trim() || null,
+        baseRefName: source.baseRefName?.trim() || null,
+        baseRefOid: source.baseRefOid?.trim() || null,
+        mergeStateStatus: source.mergeStateStatus?.trim() || null,
       });
     }
 
     return [...pullRequests.values()];
   }
 
-  private async getPullRequestSignalTimestamp(target: RepoTarget, pullRequest: PullRequestReference) {
+  private async getPullRequestSignalRevision(target: RepoTarget, pullRequest: PullRequestReference) {
     const [snapshot, checks] = await Promise.all([
       this.getPullRequestReviewSnapshot(target, pullRequest.number),
       this.runGhJsonAllowing<PullRequestCheck[]>(
-        ['pr', 'checks', String(pullRequest.number), '--repo', target.fullName, '--json', 'completedAt'],
+        ['pr', 'checks', String(pullRequest.number), '--repo', target.fullName, '--json', 'bucket,completedAt'],
         process.cwd(),
         [8],
       ),
     ]);
 
-    const timestamps = [
-      snapshot.updatedAt,
+    const tokens = [
       ...snapshot.reviewBodies.map((item) => item.timestamp),
       ...snapshot.issueComments.map((item) => item.timestamp),
       ...snapshot.threadComments.map((item) => item.timestamp),
-      ...checks.flatMap((item) => (item.completedAt ? [item.completedAt] : [])),
+      ...checks.flatMap((item) => (item.bucket === 'fail' && item.completedAt ? [item.completedAt] : [])),
+      ...(pullRequest.mergeStateStatus === 'DIRTY' && pullRequest.baseRefOid
+        ? [`conflict:${pullRequest.number}:${pullRequest.baseRefOid}`]
+        : []),
     ];
 
-    return timestamps.toSorted().at(-1) ?? pullRequest.updatedAt;
+    return tokens.length > 0 ? tokens.toSorted().join('|') : null;
   }
 
   private async getPullRequestReviewSnapshot(target: RepoTarget, prNumber: number): Promise<PullRequestReviewSnapshot> {

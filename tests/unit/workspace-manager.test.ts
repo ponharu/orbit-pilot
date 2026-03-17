@@ -13,7 +13,7 @@ afterEach(async () => {
 });
 
 describe('WorkspaceManager', () => {
-  test('creates a managed branch and refreshes to origin when there is no local history', async () => {
+  test('creates a managed branch and keeps local branch state even after origin/main moves forward', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'orbit-pilot-workspace-'));
     tempDirs.push(tempDir);
 
@@ -35,7 +35,7 @@ describe('WorkspaceManager', () => {
 
     expect(second.created).toBe(false);
     expect(second.branchName).toBe(first.branchName);
-    expect(await readFile(path.join(second.path, 'README.md'), 'utf8')).toContain('v2');
+    expect(await readFile(path.join(second.path, 'README.md'), 'utf8')).toContain('v1');
   });
 
   test('allocates a suffixed branch name when the remote already has the base issue branch', async () => {
@@ -55,7 +55,7 @@ describe('WorkspaceManager', () => {
     expect(await git(workspace.path, 'git branch --show-current')).toBe('42-orbit-pilot-1');
   });
 
-  test('creates a checkpoint commit when local changes exist', async () => {
+  test('preserves local changes without creating a checkpoint commit', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'orbit-pilot-workspace-'));
     tempDirs.push(tempDir);
 
@@ -69,11 +69,11 @@ describe('WorkspaceManager', () => {
 
     await manager.prepareWorkspace(target, issue, remotePath, workspace.branchName);
 
-    expect(await git(workspace.path, 'git status --porcelain')).toBe('');
-    expect(await git(workspace.path, 'git log --format=%s -1')).toBe('chore: orbit-pilot checkpoint');
+    expect(await git(workspace.path, 'git status --porcelain')).toBe('M README.md');
+    expect(await git(workspace.path, 'git log --format=%s -1')).toBe('init');
   });
 
-  test('returns merge conflict context when the managed branch conflicts with the updated default branch', async () => {
+  test('returns existing merge conflict context without performing the merge automatically', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'orbit-pilot-workspace-'));
     tempDirs.push(tempDir);
 
@@ -83,15 +83,17 @@ describe('WorkspaceManager', () => {
     const issue = createIssue();
 
     const workspace = await manager.prepareWorkspace(target, issue, remotePath, null);
-    await writeFile(path.join(workspace.path, 'README.md'), 'local branch change\n', 'utf8');
-    await manager.prepareWorkspace(target, issue, remotePath, workspace.branchName);
-
     await updateRemoteRepository(tempDir, remotePath, 'main branch change');
+    await writeFile(path.join(workspace.path, 'README.md'), 'local branch change\n', 'utf8');
+    await git(workspace.path, 'git add README.md');
+    await git(workspace.path, `git commit -m ${shellEscape('local change')}`);
+    await git(workspace.path, 'git fetch origin');
+    await runAllowFailure('git merge origin/main', workspace.path);
 
     const conflicted = await manager.prepareWorkspace(target, issue, remotePath, workspace.branchName);
 
     expect(conflicted.mergeConflictContext).toContain(
-      'Merge conflict while bringing the branch up to date with origin/main.',
+      'Existing merge conflict detected on the managed branch against origin/main.',
     );
     expect(conflicted.mergeConflictContext).toContain('Conflicted files: README.md');
     expect(await git(conflicted.path, 'git diff --name-only --diff-filter=U')).toBe('README.md');
@@ -107,15 +109,18 @@ describe('WorkspaceManager', () => {
     const issue = createIssue();
 
     const workspace = await manager.prepareWorkspace(target, issue, remotePath, null);
-    await writeFile(path.join(workspace.path, 'README.md'), 'local branch change\n', 'utf8');
-    await manager.prepareWorkspace(target, issue, remotePath, workspace.branchName);
     await updateRemoteRepository(tempDir, remotePath, 'main branch change');
+    await writeFile(path.join(workspace.path, 'README.md'), 'local branch change\n', 'utf8');
+    await git(workspace.path, 'git add README.md');
+    await git(workspace.path, `git commit -m ${shellEscape('local change')}`);
+    await git(workspace.path, 'git fetch origin');
+    await runAllowFailure('git merge origin/main', workspace.path);
     await manager.prepareWorkspace(target, issue, remotePath, workspace.branchName);
 
     const repeated = await manager.prepareWorkspace(target, issue, remotePath, workspace.branchName);
 
     expect(repeated.mergeConflictContext).toContain(
-      'Existing merge conflict detected on the managed branch before merging origin/main.',
+      'Existing merge conflict detected on the managed branch against origin/main.',
     );
     expect(await git(repeated.path, 'git diff --name-only --diff-filter=U')).toBe('README.md');
   });
@@ -219,6 +224,25 @@ async function run(command: string, cwd?: string) {
   }
 
   return stdout.trim();
+}
+
+async function runAllowFailure(command: string, cwd?: string) {
+  const proc = Bun.spawn(['sh', '-lc', command], {
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+
+  return {
+    stdout: stdout.trim(),
+    stderr: stderr.trim(),
+    exitCode,
+  };
 }
 
 function shellEscape(value: string) {

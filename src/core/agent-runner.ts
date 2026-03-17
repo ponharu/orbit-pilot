@@ -154,18 +154,14 @@ export class AgentRunner {
           ? buildIssuePrompt({
               target,
               issue,
-              context,
+              context: buildTurnContext(context, workspace.mergeConflictContext, handoffRequirements),
               branchName: workspace.branchName,
-              mergeConflictContext: workspace.mergeConflictContext,
-              handoffRequirements,
             })
           : buildContinuationPrompt({
               target,
               issue,
-              context,
+              context: buildTurnContext(context, workspace.mergeConflictContext, handoffRequirements),
               branchName: workspace.branchName,
-              mergeConflictContext: workspace.mergeConflictContext,
-              handoffRequirements,
             });
 
         latestTurn = await runTurn(thread, prompt, signal, workspace.branchName);
@@ -279,6 +275,20 @@ function summarizeFailureContext(items: ThreadItem[]) {
 
   const segments = [...failedCommands, ...errorItems];
   return segments.length > 0 ? segments.join('\n\n') : null;
+}
+
+function buildTurnContext(
+  context: AgentContext,
+  mergeConflictContext: string | null,
+  handoffRequirements: string | null,
+): AgentContext {
+  const segments = [context.continuationContext, mergeConflictContext, handoffRequirements].filter(
+    (value): value is string => Boolean(value && value.trim().length > 0),
+  );
+
+  return {
+    continuationContext: segments.length > 0 ? segments.join('\n\n') : null,
+  };
 }
 
 function trimForPrompt(value: string, maxLength: number) {

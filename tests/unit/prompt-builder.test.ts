@@ -19,12 +19,10 @@ describe('buildIssuePrompt', () => {
       issue,
       context,
       branchName: '42-orbit-pilot',
-      mergeConflictContext: null,
-      handoffRequirements: null,
     });
 
     expect(prompt).toContain('Task:');
-    expect(prompt).toContain('runtime rules for this thread are already established');
+    expect(prompt).toContain('Implement this issue while following the runtime rules for this thread.');
     expect(prompt).toContain('Issue body:');
     expect(prompt).not.toContain('Runtime rules:');
   });
@@ -40,16 +38,12 @@ describe('buildContinuationPrompt', () => {
         continuationContext: 'GitHub review feedback for PR #10:\nPlease fix the failing test.',
       },
       branchName: '42-orbit-pilot',
-      mergeConflictContext: 'merge conflict',
-      handoffRequirements: 'There is still no open pull request for this branch.',
     });
 
-    expect(prompt).toContain('Continuation guidance:');
+    expect(prompt).toContain('Task:');
     expect(prompt).not.toContain('Runtime rules:');
-    expect(prompt).toContain('Additional context:');
-    expect(prompt).toContain('Continue the remaining work while following the runtime rules already established');
-    expect(prompt).toContain('Merge conflict context:');
-    expect(prompt).toContain('Remaining handoff work:');
+    expect(prompt).toContain('Continue the remaining work for issue #42');
+    expect(prompt).toContain('Additional information:');
   });
 });
 

@@ -98,31 +98,6 @@ export class WorkspaceManager {
       return { branchName, mergeConflictContext: existingConflictContext };
     }
 
-    if (await this.isDirty(workspacePath)) {
-      await this.ensureCommitIdentity(workspacePath);
-      await this.runGit(workspacePath, 'git add -A', 'git add failed');
-      await this.runGit(
-        workspacePath,
-        `git commit -m ${shellEscape('chore: orbit-pilot checkpoint')}`,
-        'git checkpoint commit failed',
-      );
-    }
-
-    const mergeMain = await runShell(`git merge --no-edit ${shellEscape(originBranchRef)}`, {
-      cwd: workspacePath,
-    });
-
-    if (mergeMain.exitCode !== 0) {
-      const conflictContext = await this.buildMergeConflictContext(workspacePath, target.defaultBranch, mergeMain);
-      if (conflictContext) {
-        return { branchName, mergeConflictContext: conflictContext };
-      }
-
-      throw new Error(`git merge main failed: ${mergeMain.stderr || mergeMain.stdout}`);
-    }
-
-    await this.runGit(workspacePath, 'git clean -fd', 'git clean failed');
-
     return {
       branchName,
       mergeConflictContext: null,
@@ -157,32 +132,6 @@ export class WorkspaceManager {
     return result.exitCode === 0;
   }
 
-  private async isDirty(workspacePath: string) {
-    const result = await this.runGit(workspacePath, 'git status --porcelain', 'git status failed');
-
-    return result.stdout.trim().length > 0;
-  }
-
-  private async ensureCommitIdentity(workspacePath: string) {
-    const name = await runShell('git config user.name', { cwd: workspacePath });
-    if (name.exitCode !== 0 || name.stdout.trim().length === 0) {
-      await this.runGit(
-        workspacePath,
-        `git config user.name ${shellEscape('orbit-pilot')}`,
-        'git config user.name failed',
-      );
-    }
-
-    const email = await runShell('git config user.email', { cwd: workspacePath });
-    if (email.exitCode !== 0 || email.stdout.trim().length === 0) {
-      await this.runGit(
-        workspacePath,
-        `git config user.email ${shellEscape('orbit-pilot@local')}`,
-        'git config user.email failed',
-      );
-    }
-  }
-
   private async runGit(workspacePath: string, command: string, errorPrefix: string) {
     const result = await runShell(command, { cwd: workspacePath });
 
@@ -209,31 +158,6 @@ export class WorkspaceManager {
     throw new Error(`unable to allocate branch name for issue ${issueNumber}`);
   }
 
-  private async buildMergeConflictContext(
-    workspacePath: string,
-    defaultBranch: string,
-    mergeResult: { stdout: string; stderr: string },
-  ) {
-    const files = await this.listConflictedFiles(workspacePath);
-
-    if (files.length === 0) {
-      return null;
-    }
-
-    const status = await runShell('git status --short', { cwd: workspacePath });
-
-    return [
-      `Merge conflict while bringing the branch up to date with origin/${defaultBranch}.`,
-      `Conflicted files: ${files.join(', ')}`,
-      '',
-      'git status --short:',
-      status.stdout.trim() || '(empty)',
-      '',
-      'merge output:',
-      (mergeResult.stderr || mergeResult.stdout).trim() || '(empty)',
-    ].join('\n');
-  }
-
   private async buildExistingMergeConflictContext(workspacePath: string, defaultBranch: string) {
     const files = await this.listConflictedFiles(workspacePath);
     if (files.length === 0) {
@@ -243,10 +167,10 @@ export class WorkspaceManager {
     const status = await runShell('git status --short', { cwd: workspacePath });
 
     return [
-      `Existing merge conflict detected on the managed branch before merging origin/${defaultBranch}.`,
+      `Existing merge conflict detected on the managed branch against origin/${defaultBranch}.`,
       `Conflicted files: ${files.join(', ')}`,
       '',
-      'Resolve these conflicts first, then continue the requested work.',
+      `Bring origin/${defaultBranch} into this branch, resolve the conflicts, and continue the requested work.`,
       '',
       'git status --short:',
       status.stdout.trim() || '(empty)',

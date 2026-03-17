@@ -96,7 +96,7 @@ export class RepositoryRuntime {
     for (const issue of issues) {
       const signal = await this.client.getIssueSignal(this.target, issue);
 
-      if (signal.kind === 'review' && this.shouldRouteIssue(issue)) {
+      if (signal.kind === 'review' && signal.revision !== null && this.shouldRouteIssue(issue)) {
         this.logger.info('dispatching review-triggered issue', {
           repo: this.target.fullName,
           issue: issue.identifier,
@@ -209,10 +209,23 @@ export class RepositoryRuntime {
     const signal = await this.client.getIssueSignal(this.target, issue);
     const previous = this.handledRevisions.get(issue.number);
 
+    if (signal.kind === 'review' && signal.revision === null) {
+      return {
+        issue,
+        shouldDispatch: false,
+        revision: issue.updatedAt,
+        reason: signal.kind,
+      };
+    }
+
+    const revision = signal.kind === 'initial' ? signal.revision : signal.revision!;
+    const shouldDispatch =
+      signal.kind === 'initial' ? previous === undefined : previous === undefined || revision !== previous;
+
     return {
       issue,
-      shouldDispatch: signal.kind === 'initial' ? true : previous === undefined || signal.revision > previous,
-      revision: signal.revision,
+      shouldDispatch,
+      revision,
       reason: signal.kind,
     };
   }
@@ -407,9 +420,10 @@ export class RepositoryRuntime {
     }
 
     if (metadata.reason === 'review') {
-      const [reviewFeedback, ciFailureContext] = await Promise.all([
+      const [reviewFeedback, ciFailureContext, mergeConflictContext] = await Promise.all([
         this.client.getReviewFeedback(this.target, issue),
         this.client.getCiFailureContext(this.target, issue),
+        this.client.getMergeConflictContext(this.target, issue),
       ]);
 
       if (reviewFeedback) {
@@ -418,6 +432,10 @@ export class RepositoryRuntime {
 
       if (ciFailureContext) {
         segments.push(`CI failures for PR #${ciFailureContext.prNumber}:\n${ciFailureContext.summary}`);
+      }
+
+      if (mergeConflictContext) {
+        segments.push(`Merge conflicts for PR #${mergeConflictContext.prNumber}:\n${mergeConflictContext.summary}`);
       }
     }
 

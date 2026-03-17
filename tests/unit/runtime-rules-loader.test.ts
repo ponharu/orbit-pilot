@@ -8,7 +8,7 @@ describe('loadRuntimeRules', () => {
 
     expect(rules.path.endsWith(path.join('src', 'policy', 'default-rules.ts'))).toBe(true);
     expect(rules.text).toContain('You are the coding agent for this repository.');
-    expect(rules.text).toContain('Priority:');
-    expect(rules.text).toContain('Complete Git handoff before claiming completion');
+    expect(rules.text).toContain('Use the managed branch already checked out for this issue.');
+    expect(rules.text).toContain('Finish with a clean worktree and complete Git handoff');
   });
 });
