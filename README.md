@@ -34,6 +34,7 @@ graph LR
 - `gh` is installed and authenticated
 - `gh auth status` succeeds
 - Codex SDK authentication is available in the environment
+- A trusted environment is available for `danger-full-access` Codex runs
 
 ## Permissions
 
@@ -74,7 +75,9 @@ owners = ["your-org", "your-user"]
 excludeRepos = ["your-org/sandbox"]
 
 [codex]
-sandboxMode = "workspace-write"
+# model = "gpt-5-codex"
+# approvalPolicy = "never"
+# modelReasoningEffort = "high"
 ```
 
 ## How It Works

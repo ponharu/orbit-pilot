@@ -5,7 +5,6 @@ owners = ["your-org", "your-user"]
 excludeRepos = ["your-org/sandbox"]
 
 [codex]
-sandboxMode = "workspace-write"
 # model = "gpt-5-codex"
 # approvalPolicy = "never"
 # modelReasoningEffort = "high"

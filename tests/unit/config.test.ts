@@ -24,9 +24,6 @@ describe('loadConfig', () => {
         'owners = [" ExampleOrg ", "PersonalUser"]',
         'excludeRepos = [" ExampleOrg/SkipMe ", "personaluser/sandbox"]',
         '',
-        '[codex]',
-        'sandboxMode = "workspace-write"',
-        '',
       ].join('\n'),
       'utf8',
     );

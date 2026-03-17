@@ -6,7 +6,6 @@ import { z } from 'zod';
 const codexSchema = z.object({
   model: z.string().min(1).optional(),
   approvalPolicy: z.enum(['never', 'on-request', 'on-failure', 'untrusted']).optional(),
-  sandboxMode: z.enum(['read-only', 'workspace-write', 'danger-full-access']).default('workspace-write'),
   modelReasoningEffort: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh']).optional(),
 });
 
@@ -16,7 +15,7 @@ const configSchema = z.object({
   maxConcurrentRunsPerRepo: z.number().int().positive().default(1),
   owners: z.array(z.string().min(1)).min(1),
   excludeRepos: z.array(z.string()).default([]),
-  codex: codexSchema.default({ sandboxMode: 'workspace-write' }),
+  codex: codexSchema.default({}),
   repos: z.never().optional(),
 });
 

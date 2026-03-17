@@ -39,7 +39,7 @@ type TurnResult = {
 type ThreadOptions = {
   workingDirectory: string;
   model: AppConfig['codex']['model'];
-  sandboxMode: AppConfig['codex']['sandboxMode'];
+  sandboxMode: 'danger-full-access';
   approvalPolicy: AppConfig['codex']['approvalPolicy'];
   modelReasoningEffort: AppConfig['codex']['modelReasoningEffort'];
 };
@@ -98,7 +98,7 @@ export class AgentRunner {
     const threadOptions: ThreadOptions = {
       workingDirectory: workspace.path,
       model: this.config.codex.model,
-      sandboxMode: this.config.codex.sandboxMode,
+      sandboxMode: 'danger-full-access',
       approvalPolicy: this.config.codex.approvalPolicy,
       modelReasoningEffort: this.config.codex.modelReasoningEffort,
     };
