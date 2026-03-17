@@ -128,9 +128,11 @@ export type IssueSignal =
   | {
       kind: 'initial';
       revision: string;
+      branchName: null;
     }
   | {
       kind: 'review';
+      branchName: string;
       revision: string | null;
     };
 
@@ -251,8 +253,11 @@ export class GitHubClient {
       return {
         kind: 'initial' as const,
         revision: issue.updatedAt,
+        branchName: null,
       };
     }
+
+    const branchName = selectManagedBranchName(issue.number, pullRequests);
 
     const revisions: string[] = [];
 
@@ -265,6 +270,7 @@ export class GitHubClient {
 
     return {
       kind: 'review' as const,
+      branchName,
       revision: revisions.length > 0 ? revisions.toSorted().join('|') : null,
     };
   }
@@ -671,6 +677,36 @@ export class GitHubClient {
 
     return result.stdout;
   }
+}
+
+export function selectManagedBranchName(
+  issueNumber: number,
+  pullRequests: Array<Pick<PullRequestReference, 'headRefName'>>,
+): string | null {
+  const branchNames = [
+    ...new Set(pullRequests.map((pullRequest) => pullRequest.headRefName?.trim() || '').filter(Boolean)),
+  ];
+  if (branchNames.length === 0) {
+    return null;
+  }
+
+  const canonicalBranch = `${issueNumber}-orbit-pilot`;
+  if (branchNames.includes(canonicalBranch)) {
+    return canonicalBranch;
+  }
+
+  if (branchNames.length === 1) {
+    return branchNames[0];
+  }
+
+  const managedBranches = branchNames.filter((branchName) => branchName.startsWith(`${issueNumber}-orbit-pilot`));
+  if (managedBranches.length === 1) {
+    return managedBranches[0];
+  }
+
+  throw new Error(
+    `multiple linked open pull requests found for issue #${issueNumber}; unable to determine a managed branch`,
+  );
 }
 
 function normalizeIssue(target: RepoTarget, issue: IssueListItem): GitHubIssue {

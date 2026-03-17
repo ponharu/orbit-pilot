@@ -38,7 +38,7 @@ describe('WorkspaceManager', () => {
     expect(await readFile(path.join(second.path, 'README.md'), 'utf8')).toContain('v1');
   });
 
-  test('allocates a suffixed branch name when the remote already has the base issue branch', async () => {
+  test('reuses the canonical issue branch when the remote already has it', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'orbit-pilot-workspace-'));
     tempDirs.push(tempDir);
 
@@ -51,8 +51,8 @@ describe('WorkspaceManager', () => {
 
     const workspace = await manager.prepareWorkspace(target, issue, remotePath, null);
 
-    expect(workspace.branchName).toBe('42-orbit-pilot-1');
-    expect(await git(workspace.path, 'git branch --show-current')).toBe('42-orbit-pilot-1');
+    expect(workspace.branchName).toBe('42-orbit-pilot');
+    expect(await git(workspace.path, 'git branch --show-current')).toBe('42-orbit-pilot');
   });
 
   test('preserves local changes without creating a checkpoint commit', async () => {
@@ -167,9 +167,7 @@ function createConfig(root: string): AppConfig {
     maxConcurrentRunsPerRepo: 1,
     owners: ['acme'],
     excludeRepos: [],
-    codex: {
-      sandboxMode: 'workspace-write',
-    },
+    codex: {},
   };
 }
 

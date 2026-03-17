@@ -104,7 +104,11 @@ export class RepositoryRuntime {
           reason,
         });
 
-        this.dispatchIssue(issue, { issueNumber: issue.number, attempt: 1, reason: 'review' }, signal.revision);
+        this.dispatchIssue(
+          issue,
+          { issueNumber: issue.number, attempt: 1, reason: 'review', branchName: signal.branchName },
+          signal.revision,
+        );
       }
     }
   }
@@ -148,7 +152,12 @@ export class RepositoryRuntime {
 
         this.dispatchIssue(
           entry.issue,
-          { issueNumber: entry.issue.number, attempt: 1, reason: entry.reason ?? trigger },
+          {
+            issueNumber: entry.issue.number,
+            attempt: 1,
+            reason: entry.reason ?? trigger,
+            branchName: entry.branchName ?? null,
+          },
           entry.revision,
         );
       }
@@ -203,7 +212,7 @@ export class RepositoryRuntime {
       this.claimed.has(issue.number) ||
       this.running.has(issue.number)
     ) {
-      return { issue, shouldDispatch: false, revision: issue.updatedAt, reason: 'initial' as const };
+      return { issue, shouldDispatch: false, revision: issue.updatedAt, reason: 'initial' as const, branchName: null };
     }
 
     const signal = await this.client.getIssueSignal(this.target, issue);
@@ -215,6 +224,7 @@ export class RepositoryRuntime {
         shouldDispatch: false,
         revision: issue.updatedAt,
         reason: signal.kind,
+        branchName: signal.branchName,
       };
     }
 
@@ -227,6 +237,7 @@ export class RepositoryRuntime {
       shouldDispatch,
       revision,
       reason: signal.kind,
+      branchName: signal.branchName,
     };
   }
 
@@ -248,10 +259,11 @@ export class RepositoryRuntime {
     void (async () => {
       try {
         const existingState = await this.stateStore.readState(this.target, issue.number);
+        const preferredBranchName = existingState?.branchName ?? metadata.branchName;
         const context = await this.buildAgentContext(issue, metadata, existingState);
 
         await this.persistState(issue, {
-          branchName: existingState?.branchName ?? null,
+          branchName: preferredBranchName,
           status: 'running',
           lastHandledRevision: this.handledRevisions.get(issue.number) ?? null,
           lastRunAt: new Date().toISOString(),
@@ -270,7 +282,7 @@ export class RepositoryRuntime {
           cloneUrl,
           this.viewerLogin,
           existingState?.threadId ?? null,
-          existingState?.branchName ?? null,
+          preferredBranchName,
         );
 
         this.running.set(issue.number, {
@@ -373,7 +385,16 @@ export class RepositoryRuntime {
         if (this.running.size < this.config.maxConcurrentRunsPerRepo) {
           const savedState = await this.stateStore.readState(this.target, issue.number);
           const reason = savedState?.lastTrigger === 'review' ? 'review' : 'initial';
-          this.dispatchIssue(issue, { issueNumber: issue.number, attempt, reason }, issue.updatedAt);
+          this.dispatchIssue(
+            issue,
+            {
+              issueNumber: issue.number,
+              attempt,
+              reason,
+              branchName: savedState?.branchName ?? null,
+            },
+            issue.updatedAt,
+          );
         } else {
           this.reconcileSoon();
         }

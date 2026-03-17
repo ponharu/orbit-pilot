@@ -67,7 +67,7 @@ export class WorkspaceManager {
     workspacePath: string,
     preferredBranchName: string | null,
   ) {
-    const branchName = preferredBranchName ?? (await this.allocateBranchName(workspacePath, issue.number));
+    const branchName = preferredBranchName ?? issueBranchName(issue.number);
     const originBranchRef = `origin/${target.defaultBranch}`;
     const remoteBranchRef = `origin/${branchName}`;
 
@@ -140,22 +140,6 @@ export class WorkspaceManager {
     }
 
     return result;
-  }
-
-  private async allocateBranchName(workspacePath: string, issueNumber: number) {
-    const base = issueBranchName(issueNumber);
-
-    for (let suffix = 0; suffix < 100; suffix += 1) {
-      const branchName = suffix === 0 ? base : `${base}-${suffix}`;
-      if (
-        !(await this.branchExists(workspacePath, branchName)) &&
-        !(await this.remoteBranchExists(workspacePath, branchName))
-      ) {
-        return branchName;
-      }
-    }
-
-    throw new Error(`unable to allocate branch name for issue ${issueNumber}`);
   }
 
   private async buildExistingMergeConflictContext(workspacePath: string, defaultBranch: string) {

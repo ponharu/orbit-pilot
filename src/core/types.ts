@@ -29,6 +29,7 @@ export type RunMetadata = {
   issueNumber: number;
   attempt: number;
   reason: 'initial' | 'review';
+  branchName: string | null;
 };
 
 export type AgentContext = {
