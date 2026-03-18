@@ -159,15 +159,20 @@ async function inspectWorkspaceState(
 
   const hasRemoteBranch = remoteBranchResult.exitCode === 0;
 
+  const originDefaultBranchRef = hasRemoteBranch ? null : await resolveOriginDefaultBranchRef(workspacePath, shell);
+
   const [statusResult, aheadResult, pullRequest] = await Promise.all([
     shell('git status --porcelain', { cwd: workspacePath }),
     hasRemoteBranch
       ? shell(['git', 'rev-list', '--count', `${shellEscape(`origin/${branchName}`)}..HEAD`].join(' '), {
           cwd: workspacePath,
         })
-      : shell(['git', 'rev-list', '--count', `${shellEscape(`origin/${target.defaultBranch}`)}..HEAD`].join(' '), {
-          cwd: workspacePath,
-        }),
+      : shell(
+          ['git', 'rev-list', '--count', `${shellEscape(originDefaultBranchRef ?? 'origin/main')}..HEAD`].join(' '),
+          {
+            cwd: workspacePath,
+          },
+        ),
     findOpenPullRequestForBranch(target, workspacePath, branchName, shell),
   ]);
 
@@ -179,6 +184,11 @@ async function inspectWorkspaceState(
     commitsAheadOfRemote: Number.isFinite(commitsAhead) ? commitsAhead : 0,
     pullRequest,
   };
+}
+
+async function resolveOriginDefaultBranchRef(workspacePath: string, shell: ShellRunner) {
+  const result = await shell('git symbolic-ref --quiet --short refs/remotes/origin/HEAD', { cwd: workspacePath });
+  return result.exitCode === 0 ? result.stdout.trim() || 'origin/main' : 'origin/main';
 }
 
 function shellEscape(value: string) {

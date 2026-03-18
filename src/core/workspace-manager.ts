@@ -27,12 +27,9 @@ export class WorkspaceManager {
         workspacePath,
       });
 
-      const result = await runShell(
-        `git clone --branch ${shellEscape(target.defaultBranch)} ${shellEscape(cloneUrl)} ${shellEscape(workspacePath)}`,
-        {
-          cwd: workspaceParent,
-        },
-      );
+      const result = await runShell(`git clone ${shellEscape(cloneUrl)} ${shellEscape(workspacePath)}`, {
+        cwd: workspaceParent,
+      });
 
       if (result.exitCode !== 0) {
         throw new Error(`git clone failed: ${result.stderr || result.stdout}`);
@@ -68,7 +65,7 @@ export class WorkspaceManager {
     preferredBranchName: string | null,
   ) {
     const branchName = preferredBranchName ?? issueBranchName(issue.number);
-    const originBranchRef = `origin/${target.defaultBranch}`;
+    const originBranchRef = await this.originDefaultBranchRef(workspacePath);
     const remoteBranchRef = `origin/${branchName}`;
 
     await this.runGit(workspacePath, 'git fetch --prune origin', 'git fetch failed');
@@ -93,7 +90,7 @@ export class WorkspaceManager {
       );
     }
 
-    const existingConflictContext = await this.buildExistingMergeConflictContext(workspacePath, target.defaultBranch);
+    const existingConflictContext = await this.buildExistingMergeConflictContext(workspacePath, originBranchRef);
     if (existingConflictContext) {
       return { branchName, mergeConflictContext: existingConflictContext };
     }
@@ -142,13 +139,22 @@ export class WorkspaceManager {
     return result;
   }
 
-  private async buildExistingMergeConflictContext(workspacePath: string, defaultBranch: string) {
+  private async originDefaultBranchRef(workspacePath: string) {
+    const result = await runShell('git symbolic-ref --quiet --short refs/remotes/origin/HEAD', {
+      cwd: workspacePath,
+    });
+
+    return result.exitCode === 0 ? result.stdout.trim() || 'origin/main' : 'origin/main';
+  }
+
+  private async buildExistingMergeConflictContext(workspacePath: string, originBranchRef: string) {
     const files = await this.listConflictedFiles(workspacePath);
     if (files.length === 0) {
       return null;
     }
 
     const status = await runShell('git status --short', { cwd: workspacePath });
+    const defaultBranch = originBranchRef.replace(/^origin\//, '');
 
     return [
       `Existing merge conflict detected on the managed branch against origin/${defaultBranch}.`,

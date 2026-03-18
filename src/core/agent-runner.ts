@@ -31,7 +31,6 @@ export class AgentTurnError extends Error {
 }
 
 type TurnResult = {
-  items: ThreadItem[];
   finalResponse: string;
   usage: unknown;
 };
@@ -41,14 +40,6 @@ type TurnLogContext = {
   target: RepoTarget;
   issue: GitHubIssue;
   turnLabel: string;
-};
-
-type ThreadOptions = {
-  workingDirectory: string;
-  model: AppConfig['codex']['model'];
-  sandboxMode: 'danger-full-access';
-  approvalPolicy: AppConfig['codex']['approvalPolicy'];
-  modelReasoningEffort: AppConfig['codex']['modelReasoningEffort'];
 };
 
 export class AgentRunner {
@@ -102,10 +93,10 @@ export class AgentRunner {
     const runtimeRules = loadRuntimeRules();
 
     const codex = new Codex();
-    const threadOptions: ThreadOptions = {
+    const threadOptions = {
       workingDirectory: workspace.path,
       model: this.config.codex.model,
-      sandboxMode: 'danger-full-access',
+      sandboxMode: 'danger-full-access' as const,
       approvalPolicy: this.config.codex.approvalPolicy,
       modelReasoningEffort: this.config.codex.modelReasoningEffort,
     };
@@ -162,18 +153,19 @@ export class AgentRunner {
           turnNumber,
           initialTurn,
         });
+        const turnContext = buildTurnContext(context, workspace.mergeConflictContext, handoffRequirements);
 
         const prompt = initialTurn
           ? buildIssuePrompt({
               target,
               issue,
-              context: buildTurnContext(context, workspace.mergeConflictContext, handoffRequirements),
+              context: turnContext,
               branchName: workspace.branchName,
             })
           : buildContinuationPrompt({
               target,
               issue,
-              context: buildTurnContext(context, workspace.mergeConflictContext, handoffRequirements),
+              context: turnContext,
               branchName: workspace.branchName,
             });
 
@@ -184,16 +176,7 @@ export class AgentRunner {
           turnLabel: `turn-${turnNumber}`,
         });
 
-        const handoff = await inspectHandoff(target, workspace.path, workspace.branchName);
-        await ensureBranchPullRequestAssignedToViewer(
-          target,
-          workspace.path,
-          workspace.branchName,
-          viewerLogin,
-          this.logger,
-          undefined,
-          handoff.pullRequest,
-        );
+        const handoff = await verifyHandoff(target, workspace.path, workspace.branchName, viewerLogin, this.logger);
 
         if (handoff.complete) {
           this.logger.info('codex run completed after handoff verification', {
@@ -227,16 +210,7 @@ export class AgentRunner {
       );
     } catch (error) {
       if (!signal.aborted) {
-        const handoff = await inspectHandoff(target, workspace.path, workspace.branchName);
-        await ensureBranchPullRequestAssignedToViewer(
-          target,
-          workspace.path,
-          workspace.branchName,
-          viewerLogin,
-          this.logger,
-          undefined,
-          handoff.pullRequest,
-        );
+        await verifyHandoff(target, workspace.path, workspace.branchName, viewerLogin, this.logger);
       }
 
       throw error;
@@ -280,7 +254,7 @@ async function runTurn(
     throw new AgentTurnError(failureMessage, branchName, thread.id, summarizeFailureContext(items));
   }
 
-  return { items, finalResponse, usage };
+  return { finalResponse, usage };
 }
 
 function logCompletedItem(item: ThreadItem, context: TurnLogContext) {
@@ -345,6 +319,26 @@ function buildTurnContext(
   return {
     continuationContext: segments.length > 0 ? segments.join('\n\n') : null,
   };
+}
+
+async function verifyHandoff(
+  target: RepoTarget,
+  workspacePath: string,
+  branchName: string,
+  viewerLogin: string,
+  logger: Logger,
+) {
+  const handoff = await inspectHandoff(target, workspacePath, branchName);
+  await ensureBranchPullRequestAssignedToViewer(
+    target,
+    workspacePath,
+    branchName,
+    viewerLogin,
+    logger,
+    undefined,
+    handoff.pullRequest,
+  );
+  return handoff;
 }
 
 function trimForPrompt(value: string, maxLength: number) {

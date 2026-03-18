@@ -13,7 +13,7 @@ afterEach(async () => {
 });
 
 describe('StateStore', () => {
-  test('writes, reads, and filters state files by repository', async () => {
+  test('writes, reads, and lists state files', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'orbit-pilot-state-'));
     tempDirs.push(tempDir);
 
@@ -34,13 +34,11 @@ describe('StateStore', () => {
       owner: 'acme',
       repo: 'widget',
       fullName: 'acme/widget',
-      defaultBranch: 'main',
     };
     const otherTarget: RepoTarget = {
       owner: 'acme',
       repo: 'other',
       fullName: 'acme/other',
-      defaultBranch: 'main',
     };
 
     const state = createState(7, target.fullName, 'running');
@@ -50,7 +48,9 @@ describe('StateStore', () => {
     await store.writeState(otherTarget, 8, otherState);
 
     expect(await store.readState(target, 7)).toEqual(state);
-    expect(await store.listStates(target)).toEqual([state]);
+    expect((await store.listAllStates()).toSorted((left, right) => left.repo.localeCompare(right.repo))).toEqual(
+      [state, otherState].toSorted((left, right) => left.repo.localeCompare(right.repo)),
+    );
   });
 });
 

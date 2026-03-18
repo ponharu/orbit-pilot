@@ -12,8 +12,6 @@ async function main() {
   const { config, path } = await loadConfig(configPath);
   const client = new GitHubClient();
 
-  await client.assertReady();
-
   logger.info('starting', {
     once,
     configPath: path,

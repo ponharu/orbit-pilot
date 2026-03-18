@@ -176,7 +176,6 @@ function createTarget(): RepoTarget {
     owner: 'acme',
     repo: 'widget',
     fullName: 'acme/widget',
-    defaultBranch: 'main',
   };
 }
 

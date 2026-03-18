@@ -11,7 +11,6 @@ const target: RepoTarget = {
   owner: 'acme',
   repo: 'widget',
   fullName: 'acme/widget',
-  defaultBranch: 'main',
 };
 
 const logger: Logger = {
@@ -63,6 +62,10 @@ describe('inspectHandoff', () => {
 
       if (command.includes('status --porcelain')) {
         return { exitCode: 0, stdout: ' M src/app.ts\n', stderr: '' };
+      }
+
+      if (command.includes('symbolic-ref')) {
+        return { exitCode: 0, stdout: 'origin/main\n', stderr: '' };
       }
 
       if (command.includes('rev-list')) {

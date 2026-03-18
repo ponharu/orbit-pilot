@@ -51,7 +51,6 @@ const target: RepoTarget = {
   owner: 'acme',
   repo: 'widget',
   fullName: 'acme/widget',
-  defaultBranch: 'main',
 };
 
 const issue: GitHubIssue = {

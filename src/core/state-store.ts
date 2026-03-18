@@ -19,13 +19,12 @@ export class StateStore {
     await writeFile(this.statePath(target, issueNumber), `${JSON.stringify(state, null, 2)}\n`, 'utf8');
   }
 
-  async listStates(target: RepoTarget): Promise<WorkspaceState[]> {
+  async listAllStates(): Promise<WorkspaceState[]> {
     try {
       const entries = await readdir(this.config.stateRoot, { withFileTypes: true });
-      const prefix = `${sanitize(target.owner)}__${sanitize(target.repo)}__issue-`;
       const states = await Promise.all(
         entries
-          .filter((entry) => entry.isFile() && entry.name.startsWith(prefix) && entry.name.endsWith('.json'))
+          .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
           .map(async (entry) => {
             try {
               return JSON.parse(await readFile(path.join(this.config.stateRoot, entry.name), 'utf8')) as WorkspaceState;
