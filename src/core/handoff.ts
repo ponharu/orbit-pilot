@@ -10,6 +10,7 @@ export type BranchPullRequest = {
 export type HandoffInspection = {
   complete: boolean;
   summary: string | null;
+  pullRequest: BranchPullRequest | null;
 };
 
 export type ShellRunner = typeof runShell;
@@ -51,6 +52,7 @@ export async function inspectHandoff(
   return {
     complete: missing.length === 0,
     summary: missing.length > 0 ? missing.join('\n') : null,
+    pullRequest: snapshot.pullRequest,
   };
 }
 
@@ -61,8 +63,10 @@ export async function ensureBranchPullRequestAssignedToViewer(
   viewerLogin: string,
   logger: Logger,
   shell: ShellRunner = runShell,
+  existingPullRequest: BranchPullRequest | null = null,
 ) {
-  const branchPullRequest = await findOpenPullRequestForBranch(target, workspacePath, branchName, shell);
+  const branchPullRequest =
+    existingPullRequest ?? (await findOpenPullRequestForBranch(target, workspacePath, branchName, shell));
 
   if (!branchPullRequest || branchPullRequest.assignees.includes(viewerLogin)) {
     return;

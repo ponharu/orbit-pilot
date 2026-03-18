@@ -99,7 +99,7 @@ export class AgentRunner {
     signal: AbortSignal,
   ) {
     const workspace = await this.workspaceManager.prepareWorkspace(target, issue, cloneUrl, existingBranchName);
-    const runtimeRules = await loadRuntimeRules();
+    const runtimeRules = loadRuntimeRules();
 
     const codex = new Codex();
     const threadOptions: ThreadOptions = {
@@ -191,6 +191,8 @@ export class AgentRunner {
           workspace.branchName,
           viewerLogin,
           this.logger,
+          undefined,
+          handoff.pullRequest,
         );
 
         if (handoff.complete) {
@@ -225,12 +227,15 @@ export class AgentRunner {
       );
     } catch (error) {
       if (!signal.aborted) {
+        const handoff = await inspectHandoff(target, workspace.path, workspace.branchName);
         await ensureBranchPullRequestAssignedToViewer(
           target,
           workspace.path,
           workspace.branchName,
           viewerLogin,
           this.logger,
+          undefined,
+          handoff.pullRequest,
         );
       }
 

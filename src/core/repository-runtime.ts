@@ -1,5 +1,5 @@
 import type { AppConfig } from '../config';
-import { GitHubClient } from '../github/client';
+import { GitHubClient, type LinkedPullRequest } from '../github/client';
 import type { AgentContext, GitHubIssue, Logger, RepoTarget, RunMetadata, WorkspaceState } from './types';
 import { AgentRunner, AgentTurnError, type AgentRunHandle } from './agent-runner';
 import { StateStore } from './state-store';
@@ -94,7 +94,7 @@ export class RepositoryRuntime {
     const issues = await this.client.getIssues(this.target, issueNumbers);
 
     for (const issue of issues) {
-      const signal = await this.client.getIssueSignal(this.target, issue);
+      const signal = await this.client.getIssueSignalContext(this.target, issue);
 
       if (signal.kind === 'review' && signal.revision !== null && this.shouldRouteIssue(issue)) {
         this.logger.info('dispatching review-triggered issue', {
@@ -108,6 +108,7 @@ export class RepositoryRuntime {
           issue,
           { issueNumber: issue.number, attempt: 1, reason: 'review', branchName: signal.branchName },
           signal.revision,
+          signal.pullRequests,
         );
       }
     }
@@ -133,10 +134,6 @@ export class RepositoryRuntime {
       const evaluated = [];
 
       for (const issue of issues) {
-        if (issue.isPullRequest) {
-          continue;
-        }
-
         const evaluation = await this.evaluateIssue(issue);
         if (evaluation.shouldDispatch) {
           evaluated.push(evaluation);
@@ -159,6 +156,7 @@ export class RepositoryRuntime {
             branchName: entry.branchName ?? null,
           },
           entry.revision,
+          entry.reviewPullRequests,
         );
       }
 
@@ -212,10 +210,17 @@ export class RepositoryRuntime {
       this.claimed.has(issue.number) ||
       this.running.has(issue.number)
     ) {
-      return { issue, shouldDispatch: false, revision: issue.updatedAt, reason: 'initial' as const, branchName: null };
+      return {
+        issue,
+        shouldDispatch: false,
+        revision: issue.updatedAt,
+        reason: 'initial' as const,
+        branchName: null,
+        reviewPullRequests: null,
+      };
     }
 
-    const signal = await this.client.getIssueSignal(this.target, issue);
+    const signal = await this.client.getIssueSignalContext(this.target, issue);
     const previous = this.handledRevisions.get(issue.number);
 
     if (signal.kind === 'review' && signal.revision === null) {
@@ -225,6 +230,7 @@ export class RepositoryRuntime {
         revision: issue.updatedAt,
         reason: signal.kind,
         branchName: signal.branchName,
+        reviewPullRequests: signal.pullRequests,
       };
     }
 
@@ -238,6 +244,7 @@ export class RepositoryRuntime {
       revision,
       reason: signal.kind,
       branchName: signal.branchName,
+      reviewPullRequests: signal.kind === 'review' ? signal.pullRequests : null,
     };
   }
 
@@ -249,7 +256,12 @@ export class RepositoryRuntime {
     return issue.state === 'closed';
   }
 
-  private dispatchIssue(issue: GitHubIssue, metadata: RunMetadata, revision: string) {
+  private dispatchIssue(
+    issue: GitHubIssue,
+    metadata: RunMetadata,
+    revision: string,
+    reviewPullRequests: LinkedPullRequest[] | null = null,
+  ) {
     if (this.claimed.has(issue.number) || this.running.has(issue.number)) {
       return;
     }
@@ -257,10 +269,13 @@ export class RepositoryRuntime {
     this.claimed.add(issue.number);
 
     void (async () => {
+      let existingState: WorkspaceState | null = null;
+      let preferredBranchName: string | null = metadata.branchName;
+
       try {
-        const existingState = await this.stateStore.readState(this.target, issue.number);
-        const preferredBranchName = existingState?.branchName ?? metadata.branchName;
-        const context = await this.buildAgentContext(issue, metadata, existingState);
+        existingState = await this.stateStore.readState(this.target, issue.number);
+        preferredBranchName = existingState?.branchName ?? metadata.branchName;
+        const context = await this.buildAgentContext(issue, metadata, existingState, reviewPullRequests);
 
         await this.persistState(issue, {
           branchName: preferredBranchName,
@@ -315,7 +330,7 @@ export class RepositoryRuntime {
       } catch (error) {
         if (this.disposed || this.stoppedByRuntime.delete(issue.number)) {
           await this.persistState(issue, {
-            branchName: (await this.stateStore.readState(this.target, issue.number))?.branchName ?? null,
+            branchName: preferredBranchName,
             status: 'idle',
             lastHandledRevision: this.handledRevisions.get(issue.number) ?? null,
             lastRunAt: new Date().toISOString(),
@@ -323,7 +338,7 @@ export class RepositoryRuntime {
             retryCount: Math.max(0, metadata.attempt - 1),
             lastError: null,
             lastFailureContext: null,
-            threadId: (await this.stateStore.readState(this.target, issue.number))?.threadId ?? null,
+            threadId: existingState?.threadId ?? null,
           });
           this.running.delete(issue.number);
           this.claimed.delete(issue.number);
@@ -339,10 +354,7 @@ export class RepositoryRuntime {
         });
 
         await this.persistState(issue, {
-          branchName:
-            error instanceof AgentTurnError
-              ? error.branchName
-              : ((await this.stateStore.readState(this.target, issue.number))?.branchName ?? null),
+          branchName: error instanceof AgentTurnError ? error.branchName : preferredBranchName,
           status: this.continuous ? 'retrying' : 'failed',
           lastHandledRevision: this.handledRevisions.get(issue.number) ?? null,
           lastRunAt: new Date().toISOString(),
@@ -350,22 +362,17 @@ export class RepositoryRuntime {
           retryCount: metadata.attempt,
           lastError: errorMessage,
           lastFailureContext:
-            error instanceof AgentTurnError
-              ? error.failureContext
-              : ((await this.stateStore.readState(this.target, issue.number))?.lastFailureContext ?? null),
-          threadId:
-            error instanceof AgentTurnError
-              ? error.threadId
-              : ((await this.stateStore.readState(this.target, issue.number))?.threadId ?? null),
+            error instanceof AgentTurnError ? error.failureContext : (existingState?.lastFailureContext ?? null),
+          threadId: error instanceof AgentTurnError ? error.threadId : (existingState?.threadId ?? null),
         });
 
         this.running.delete(issue.number);
-        this.scheduleRetry(issue, metadata.attempt + 1);
+        this.scheduleRetry(issue, metadata.attempt + 1, revision);
       }
     })();
   }
 
-  private scheduleRetry(issue: GitHubIssue, attempt: number) {
+  private scheduleRetry(issue: GitHubIssue, attempt: number, revision: string) {
     if (!this.continuous) {
       this.claimed.delete(issue.number);
       return;
@@ -393,7 +400,7 @@ export class RepositoryRuntime {
               reason,
               branchName: savedState?.branchName ?? null,
             },
-            issue.updatedAt,
+            revision,
           );
         } else {
           this.reconcileSoon();
@@ -431,6 +438,7 @@ export class RepositoryRuntime {
     issue: GitHubIssue,
     metadata: RunMetadata,
     existingState: WorkspaceState | null,
+    reviewPullRequests: LinkedPullRequest[] | null = null,
   ): Promise<AgentContext> {
     const segments: string[] = [];
     const failureContext =
@@ -441,11 +449,11 @@ export class RepositoryRuntime {
     }
 
     if (metadata.reason === 'review') {
-      const [reviewFeedback, ciFailureContext, mergeConflictContext] = await Promise.all([
-        this.client.getReviewFeedback(this.target, issue),
-        this.client.getCiFailureContext(this.target, issue),
-        this.client.getMergeConflictContext(this.target, issue),
-      ]);
+      const { reviewFeedback, ciFailureContext, mergeConflictContext } = await this.client.buildReviewTriggerContext(
+        this.target,
+        issue,
+        reviewPullRequests ?? undefined,
+      );
 
       if (reviewFeedback) {
         segments.push(`GitHub review feedback for PR #${reviewFeedback.prNumber}:\n${reviewFeedback.feedback}`);

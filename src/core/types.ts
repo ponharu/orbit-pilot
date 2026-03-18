@@ -15,7 +15,6 @@ export type GitHubIssue = {
   htmlUrl: string;
   createdAt: string;
   updatedAt: string;
-  isPullRequest: boolean;
 };
 
 export type RepoTarget = {

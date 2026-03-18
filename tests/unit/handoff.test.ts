@@ -123,4 +123,27 @@ describe('ensureBranchPullRequestAssignedToViewer', () => {
       ),
     ).toBe(true);
   });
+
+  test('reuses an already-fetched PR instead of listing again', async () => {
+    const commands: string[] = [];
+
+    const shell: ShellRunner = async (command: string) => {
+      commands.push(command);
+
+      if (command.includes('gh') && command.includes('pr') && command.includes('edit')) {
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    };
+
+    await ensureBranchPullRequestAssignedToViewer(target, '/tmp/workspace', '42-orbit-pilot', 'viewer', logger, shell, {
+      number: 56,
+      url: 'https://github.com/acme/widget/pull/56',
+      assignees: ['other-user'],
+    });
+
+    expect(commands.some((command) => command.includes("'pr' 'list'"))).toBe(false);
+    expect(commands.some((command) => command.includes("'pr' 'edit'"))).toBe(true);
+  });
 });

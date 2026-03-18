@@ -64,7 +64,6 @@ const issue: GitHubIssue = {
   htmlUrl: 'https://github.com/acme/widget/issues/42',
   createdAt: '2026-03-15T00:00:00Z',
   updatedAt: '2026-03-15T00:00:00Z',
-  isPullRequest: false,
 };
 
 const context: AgentContext = {

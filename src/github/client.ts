@@ -102,6 +102,36 @@ type ReviewThreadNode = {
   };
 };
 
+type PullRequestSignalSnapshotQuery = {
+  repository: {
+    pullRequest: {
+      number: number;
+      updatedAt: string;
+      comments: {
+        nodes: Array<{
+          createdAt?: string | null;
+          updatedAt?: string | null;
+        } | null>;
+      };
+      reviews: {
+        nodes: Array<{
+          submittedAt?: string | null;
+        } | null>;
+      };
+      reviewThreads: {
+        nodes: Array<{
+          comments: {
+            nodes: Array<{
+              createdAt?: string | null;
+              updatedAt?: string | null;
+            } | null>;
+          };
+        } | null>;
+      };
+    } | null;
+  } | null;
+};
+
 type ReviewThreadCommentNode = {
   body?: string | null;
   path?: string | null;
@@ -114,7 +144,7 @@ type ReviewThreadCommentNode = {
   } | null;
 };
 
-type PullRequestReference = {
+export type LinkedPullRequest = {
   number: number;
   updatedAt: string;
   url: string;
@@ -123,18 +153,6 @@ type PullRequestReference = {
   baseRefOid: string | null;
   mergeStateStatus: string | null;
 };
-
-export type IssueSignal =
-  | {
-      kind: 'initial';
-      revision: string;
-      branchName: null;
-    }
-  | {
-      kind: 'review';
-      branchName: string;
-      revision: string | null;
-    };
 
 type PullRequestReviewSnapshot = {
   number: number;
@@ -152,6 +170,33 @@ type PullRequestReviewSnapshot = {
     text: string;
   }>;
 };
+
+type PullRequestSignalSnapshot = {
+  updatedAt: string;
+  reviewTimestamps: string[];
+  issueCommentTimestamps: string[];
+  threadCommentTimestamps: string[];
+};
+
+export type ReviewTriggerContext = {
+  reviewFeedback: { prNumber: number; feedback: string } | null;
+  ciFailureContext: { prNumber: number; summary: string } | null;
+  mergeConflictContext: { prNumber: number; summary: string } | null;
+};
+
+export type IssueSignalContext =
+  | {
+      kind: 'initial';
+      revision: string;
+      branchName: null;
+      pullRequests: [];
+    }
+  | {
+      kind: 'review';
+      branchName: string | null;
+      revision: string | null;
+      pullRequests: LinkedPullRequest[];
+    };
 
 export class GitHubClient {
   private authTokenPromise: Promise<string> | null = null;
@@ -246,7 +291,7 @@ export class GitHubClient {
     );
   }
 
-  async getIssueSignal(target: RepoTarget, issue: GitHubIssue) {
+  async getIssueSignalContext(target: RepoTarget, issue: GitHubIssue): Promise<IssueSignalContext> {
     const pullRequests = await this.listLinkedOpenPullRequests(target, issue.number);
 
     if (pullRequests.length === 0) {
@@ -254,6 +299,7 @@ export class GitHubClient {
         kind: 'initial' as const,
         revision: issue.updatedAt,
         branchName: null,
+        pullRequests: [],
       };
     }
 
@@ -272,6 +318,7 @@ export class GitHubClient {
       kind: 'review' as const,
       branchName,
       revision: revisions.length > 0 ? revisions.toSorted().join('|') : null,
+      pullRequests,
     };
   }
 
@@ -280,78 +327,75 @@ export class GitHubClient {
     return `https://x-access-token:${token}@github.com/${target.fullName}.git`;
   }
 
-  async getReviewFeedback(
+  async buildReviewTriggerContext(
     target: RepoTarget,
     issue: GitHubIssue,
-  ): Promise<{ prNumber: number; feedback: string } | null> {
-    const pullRequests = await this.listLinkedOpenPullRequests(target, issue.number);
+    pullRequests?: LinkedPullRequest[],
+  ): Promise<ReviewTriggerContext> {
+    const linkedPullRequests = pullRequests ?? (await this.listLinkedOpenPullRequests(target, issue.number));
 
-    if (pullRequests.length === 0) {
-      return null;
+    if (linkedPullRequests.length === 0) {
+      return {
+        reviewFeedback: null,
+        ciFailureContext: null,
+        mergeConflictContext: null,
+      };
     }
 
-    let latest: { prNumber: number; timestamp: string; feedback: string } | null = null;
+    const [reviewSnapshots, ciSummaries] = await Promise.all([
+      Promise.all(
+        linkedPullRequests.map(async (pullRequest) => ({
+          pullRequest,
+          snapshot: await this.getPullRequestReviewSnapshot(target, pullRequest.number),
+        })),
+      ),
+      Promise.all(
+        linkedPullRequests.map(async (pullRequest) => ({
+          pullRequest,
+          summary: await this.getPullRequestCiFailureSummary(target, pullRequest.number),
+        })),
+      ),
+    ]);
 
-    for (const pullRequest of pullRequests) {
-      const snapshot = await this.getPullRequestReviewSnapshot(target, pullRequest.number);
+    let reviewFeedback: { prNumber: number; feedback: string } | null = null;
+    let latestTimestamp: string | null = null;
+
+    for (const { pullRequest, snapshot } of reviewSnapshots) {
       const timestamp = latestReviewTimestamp(snapshot);
-      const feedback = formatReviewFeedback(snapshot);
-
-      if (!latest || timestamp > latest.timestamp) {
-        latest = {
+      if (!latestTimestamp || timestamp > latestTimestamp) {
+        latestTimestamp = timestamp;
+        reviewFeedback = {
           prNumber: pullRequest.number,
-          timestamp,
-          feedback,
+          feedback: formatReviewFeedback(snapshot),
         };
       }
     }
 
-    return latest;
+    const ciFailure = ciSummaries.find((entry) => entry.summary);
+    const ciFailureContext =
+      ciFailure && ciFailure.summary
+        ? {
+            prNumber: ciFailure.pullRequest.number,
+            summary: ciFailure.summary,
+          }
+        : null;
+
+    const conflictPullRequest = linkedPullRequests.find((pullRequest) => pullRequest.mergeStateStatus === 'DIRTY');
+    const mergeConflictContext = conflictPullRequest
+      ? {
+          prNumber: conflictPullRequest.number,
+          summary: formatMergeConflictSummary(target, conflictPullRequest),
+        }
+      : null;
+
+    return {
+      reviewFeedback,
+      ciFailureContext,
+      mergeConflictContext,
+    };
   }
 
-  async getCiFailureContext(
-    target: RepoTarget,
-    issue: GitHubIssue,
-  ): Promise<{ prNumber: number; summary: string } | null> {
-    const pullRequests = await this.listLinkedOpenPullRequests(target, issue.number);
-
-    if (pullRequests.length === 0) {
-      return null;
-    }
-
-    for (const pullRequest of pullRequests) {
-      const summary = await this.getPullRequestCiFailureSummary(target, pullRequest.number);
-      if (summary) {
-        return { prNumber: pullRequest.number, summary };
-      }
-    }
-
-    return null;
-  }
-
-  async getMergeConflictContext(
-    target: RepoTarget,
-    issue: GitHubIssue,
-  ): Promise<{ prNumber: number; summary: string } | null> {
-    const pullRequests = await this.listLinkedOpenPullRequests(target, issue.number);
-
-    for (const pullRequest of pullRequests) {
-      if (pullRequest.mergeStateStatus !== 'DIRTY') {
-        continue;
-      }
-
-      const baseRef = pullRequest.baseRefName?.trim() || target.defaultBranch;
-      const headRef = pullRequest.headRefName?.trim() || `PR #${pullRequest.number}`;
-      return {
-        prNumber: pullRequest.number,
-        summary: `PR #${pullRequest.number} has merge conflicts with ${baseRef}. Bring ${baseRef} into ${headRef}, resolve the conflicts, rerun the relevant validation, push the branch, and update the existing pull request.`,
-      };
-    }
-
-    return null;
-  }
-
-  private async listLinkedOpenPullRequests(target: RepoTarget, issueNumber: number): Promise<PullRequestReference[]> {
+  private async listLinkedOpenPullRequests(target: RepoTarget, issueNumber: number): Promise<LinkedPullRequest[]> {
     const result = await this.graphqlQuery<LinkedPullRequestQuery>(
       `
         query LinkedPullRequests($owner: String!, $repo: String!, $issueNumber: Int!) {
@@ -388,7 +432,7 @@ export class GitHubClient {
     );
 
     const references = result.repository?.issue?.timelineItems.nodes ?? [];
-    const pullRequests = new Map<number, PullRequestReference>();
+    const pullRequests = new Map<number, LinkedPullRequest>();
 
     for (const node of references) {
       const source = node?.source;
@@ -416,9 +460,9 @@ export class GitHubClient {
     return [...pullRequests.values()];
   }
 
-  private async getPullRequestSignalRevision(target: RepoTarget, pullRequest: PullRequestReference) {
+  private async getPullRequestSignalRevision(target: RepoTarget, pullRequest: LinkedPullRequest) {
     const [snapshot, checks] = await Promise.all([
-      this.getPullRequestReviewSnapshot(target, pullRequest.number),
+      this.getPullRequestSignalSnapshot(target, pullRequest.number),
       this.runGhJsonAllowing<PullRequestCheck[]>(
         ['pr', 'checks', String(pullRequest.number), '--repo', target.fullName, '--json', 'bucket,completedAt'],
         process.cwd(),
@@ -427,9 +471,10 @@ export class GitHubClient {
     ]);
 
     const tokens = [
-      ...snapshot.reviewBodies.map((item) => item.timestamp),
-      ...snapshot.issueComments.map((item) => item.timestamp),
-      ...snapshot.threadComments.map((item) => item.timestamp),
+      snapshot.updatedAt,
+      ...snapshot.reviewTimestamps,
+      ...snapshot.issueCommentTimestamps,
+      ...snapshot.threadCommentTimestamps,
       ...checks.flatMap((item) => (item.bucket === 'fail' && item.completedAt ? [item.completedAt] : [])),
       ...(pullRequest.mergeStateStatus === 'DIRTY' && pullRequest.baseRefOid
         ? [`conflict:${pullRequest.number}:${pullRequest.baseRefOid}`]
@@ -437,6 +482,69 @@ export class GitHubClient {
     ];
 
     return tokens.length > 0 ? tokens.toSorted().join('|') : null;
+  }
+
+  private async getPullRequestSignalSnapshot(target: RepoTarget, prNumber: number): Promise<PullRequestSignalSnapshot> {
+    const result = await this.graphqlQuery<PullRequestSignalSnapshotQuery>(
+      `
+        query PullRequestSignalSnapshot($owner: String!, $repo: String!, $prNumber: Int!) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $prNumber) {
+              number
+              updatedAt
+              comments(first: 50) {
+                nodes {
+                  createdAt
+                  updatedAt
+                }
+              }
+              reviews(first: 50) {
+                nodes {
+                  submittedAt
+                }
+              }
+              reviewThreads(first: 100) {
+                nodes {
+                  comments(first: 20) {
+                    nodes {
+                      createdAt
+                      updatedAt
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `,
+      {
+        owner: target.owner,
+        repo: target.repo,
+        prNumber,
+      },
+    );
+
+    const pullRequest = result.repository?.pullRequest;
+    if (!pullRequest) {
+      throw new Error(`pull request not found: ${target.fullName}#${prNumber}`);
+    }
+
+    return {
+      updatedAt: pullRequest.updatedAt,
+      reviewTimestamps: (pullRequest.reviews.nodes ?? []).flatMap((review) =>
+        review?.submittedAt ? [review.submittedAt] : [],
+      ),
+      issueCommentTimestamps: (pullRequest.comments.nodes ?? []).flatMap((comment) => {
+        const timestamp = comment?.updatedAt ?? comment?.createdAt ?? null;
+        return timestamp ? [timestamp] : [];
+      }),
+      threadCommentTimestamps: (pullRequest.reviewThreads.nodes ?? []).flatMap((thread) =>
+        (thread?.comments.nodes ?? []).flatMap((comment) => {
+          const timestamp = comment?.updatedAt ?? comment?.createdAt ?? null;
+          return timestamp ? [timestamp] : [];
+        }),
+      ),
+    };
   }
 
   private async getPullRequestReviewSnapshot(target: RepoTarget, prNumber: number): Promise<PullRequestReviewSnapshot> {
@@ -681,7 +789,7 @@ export class GitHubClient {
 
 export function selectManagedBranchName(
   issueNumber: number,
-  pullRequests: Array<Pick<PullRequestReference, 'headRefName'>>,
+  pullRequests: Array<Pick<LinkedPullRequest, 'headRefName'>>,
 ): string | null {
   const branchNames = [
     ...new Set(pullRequests.map((pullRequest) => pullRequest.headRefName?.trim() || '').filter(Boolean)),
@@ -720,7 +828,6 @@ function normalizeIssue(target: RepoTarget, issue: IssueListItem): GitHubIssue {
     htmlUrl: issue.url,
     createdAt: issue.createdAt,
     updatedAt: issue.updatedAt,
-    isPullRequest: false,
   };
 }
 
@@ -771,6 +878,12 @@ function formatCommentLocation(comment: ReviewThreadCommentNode | null) {
   }
 
   return ` (${comment.path})`;
+}
+
+function formatMergeConflictSummary(target: RepoTarget, pullRequest: LinkedPullRequest) {
+  const baseRef = pullRequest.baseRefName?.trim() || target.defaultBranch;
+  const headRef = pullRequest.headRefName?.trim() || `PR #${pullRequest.number}`;
+  return `PR #${pullRequest.number} has merge conflicts with ${baseRef}. Bring ${baseRef} into ${headRef}, resolve the conflicts, rerun the relevant validation, push the branch, and update the existing pull request.`;
 }
 
 function shellEscape(value: string) {

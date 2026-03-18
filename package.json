@@ -41,7 +41,7 @@
     "start": "bun src/index.ts",
     "format": "bunx oxfmt . --write",
     "lint": "bunx oxlint .",
-    "prepare": "bunx lefthook install",
+    "hooks:install": "bunx lefthook install",
     "check": "tsc --noEmit",
     "test": "bun test ./tests/unit",
     "typecheck": "tsc --noEmit"
@@ -67,8 +67,7 @@
     "typescript": "5.9.3"
   },
   "engines": {
-    "bun": ">=1.3.10",
-    "node": ">=24.10.0 || ^22.14.0"
+    "bun": ">=1.3.10"
   },
   "packageManager": "bun@1.3.10"
 }

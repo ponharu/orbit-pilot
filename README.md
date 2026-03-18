@@ -1,6 +1,6 @@
 # orbit-pilot
 
-`orbit-pilot` is a Bun CLI that watches GitHub issues assigned to the currently authenticated `gh` user and runs Codex against them.
+`orbit-pilot` is a Bun-only CLI that watches GitHub issues assigned to the currently authenticated `gh` user and runs Codex against them.
 
 It automates the "assign to me -> code -> open or update a PR -> respond to review and CI" loop directly from GitHub.
 
@@ -31,6 +31,7 @@ graph LR
 
 ## Requirements
 
+- Bun `>= 1.3.10`
 - `gh` is installed and authenticated
 - `gh auth status` succeeds
 - Codex SDK authentication is available in the environment
@@ -46,6 +47,13 @@ graph LR
 bun install
 cp orbit-pilot.example.toml orbit-pilot.toml
 bun run start
+```
+
+Install from the published package:
+
+```bash
+bun add -g orbit-pilot
+orbit-pilot --once
 ```
 
 Run a single polling pass:
@@ -79,6 +87,12 @@ excludeRepos = ["your-org/sandbox"]
 # approvalPolicy = "never"
 # modelReasoningEffort = "high"
 ```
+
+## Package Distribution
+
+- The published package is Bun-only and ships the TypeScript sources directly
+- There is intentionally no build step for release artifacts because Bun executes the CLI entrypoint as-is
+- If you develop on this repository and want git hooks locally, run `bun run hooks:install`
 
 ## How It Works
 
