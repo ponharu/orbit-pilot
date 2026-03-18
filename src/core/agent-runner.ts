@@ -1,7 +1,7 @@
 import { Codex, type Thread, type ThreadItem } from '@openai/codex-sdk';
 import type { AppConfig } from '../config';
 import type { AgentContext, GitHubIssue, Logger, RepoTarget } from './types';
-import { ensureBranchPullRequestAssignedToViewer, inspectHandoff } from './handoff';
+import { ensureBranchPullRequestAssignedToViewer, inspectHandoff, type BranchPullRequest } from './handoff';
 import { buildContinuationPrompt, buildIssuePrompt, buildRuntimeRulesPrompt } from './prompt-builder';
 import { loadRuntimeRules } from './runtime-rules-loader';
 import { WorkspaceManager } from './workspace-manager';
@@ -42,6 +42,12 @@ type TurnLogContext = {
   turnLabel: string;
 };
 
+type HandoffCache = {
+  pullRequest?: BranchPullRequest | null;
+  hasRemoteBranch?: boolean;
+  assigneeEnsuredForPullRequest?: number;
+};
+
 export class AgentRunner {
   constructor(
     private readonly config: AppConfig,
@@ -54,7 +60,6 @@ export class AgentRunner {
     issue: GitHubIssue,
     context: AgentContext,
     cloneUrl: string,
-    viewerLogin: string,
     existingThreadId: string | null,
     existingBranchName: string | null,
   ): AgentRunHandle {
@@ -65,7 +70,6 @@ export class AgentRunner {
       issue,
       context,
       cloneUrl,
-      viewerLogin,
       existingThreadId,
       existingBranchName,
       controller.signal,
@@ -84,7 +88,6 @@ export class AgentRunner {
     issue: GitHubIssue,
     context: AgentContext,
     cloneUrl: string,
-    viewerLogin: string,
     existingThreadId: string | null,
     existingBranchName: string | null,
     signal: AbortSignal,
@@ -114,6 +117,7 @@ export class AgentRunner {
 
     let handoffRequirements: string | null = null;
     let latestTurn: TurnResult | null = null;
+    const handoffCache: HandoffCache = {};
 
     try {
       if (!existingThreadId) {
@@ -176,7 +180,7 @@ export class AgentRunner {
           turnLabel: `turn-${turnNumber}`,
         });
 
-        const handoff = await verifyHandoff(target, workspace.path, workspace.branchName, viewerLogin, this.logger);
+        const handoff = await verifyHandoff(target, workspace.path, workspace.branchName, this.logger, handoffCache);
 
         if (handoff.complete) {
           this.logger.info('codex run completed after handoff verification', {
@@ -210,7 +214,7 @@ export class AgentRunner {
       );
     } catch (error) {
       if (!signal.aborted) {
-        await verifyHandoff(target, workspace.path, workspace.branchName, viewerLogin, this.logger);
+        await verifyHandoff(target, workspace.path, workspace.branchName, this.logger, handoffCache);
       }
 
       throw error;
@@ -325,19 +329,32 @@ async function verifyHandoff(
   target: RepoTarget,
   workspacePath: string,
   branchName: string,
-  viewerLogin: string,
   logger: Logger,
+  cache: HandoffCache,
 ) {
-  const handoff = await inspectHandoff(target, workspacePath, branchName);
-  await ensureBranchPullRequestAssignedToViewer(
-    target,
-    workspacePath,
-    branchName,
-    viewerLogin,
-    logger,
-    undefined,
-    handoff.pullRequest,
-  );
+  const handoff = await inspectHandoff(target, workspacePath, branchName, undefined, {
+    pullRequest: cache.pullRequest,
+    hasRemoteBranch: cache.hasRemoteBranch,
+  });
+  if (handoff.pullRequest) {
+    cache.pullRequest = handoff.pullRequest;
+  }
+  if (handoff.hasRemoteBranch) {
+    cache.hasRemoteBranch = true;
+  }
+  if (handoff.pullRequest && cache.assigneeEnsuredForPullRequest !== handoff.pullRequest.number) {
+    const ensured = await ensureBranchPullRequestAssignedToViewer(
+      target,
+      workspacePath,
+      branchName,
+      logger,
+      undefined,
+      handoff.pullRequest,
+    );
+    if (ensured) {
+      cache.assigneeEnsuredForPullRequest = handoff.pullRequest.number;
+    }
+  }
   return handoff;
 }
 

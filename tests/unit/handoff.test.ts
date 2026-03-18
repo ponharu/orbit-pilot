@@ -117,12 +117,12 @@ describe('ensureBranchPullRequestAssignedToViewer', () => {
       throw new Error(`Unexpected command: ${command}`);
     };
 
-    await ensureBranchPullRequestAssignedToViewer(target, '/tmp/workspace', '42-orbit-pilot', 'viewer', logger, shell);
+    await ensureBranchPullRequestAssignedToViewer(target, '/tmp/workspace', '42-orbit-pilot', logger, shell);
 
     expect(
       commands.some(
         (command) =>
-          command.includes("'pr' 'edit'") && command.includes("'--add-assignee'") && command.includes("'viewer'"),
+          command.includes("'pr' 'edit'") && command.includes("'--add-assignee'") && command.includes("'@me'"),
       ),
     ).toBe(true);
   });
@@ -140,7 +140,7 @@ describe('ensureBranchPullRequestAssignedToViewer', () => {
       throw new Error(`Unexpected command: ${command}`);
     };
 
-    await ensureBranchPullRequestAssignedToViewer(target, '/tmp/workspace', '42-orbit-pilot', 'viewer', logger, shell, {
+    await ensureBranchPullRequestAssignedToViewer(target, '/tmp/workspace', '42-orbit-pilot', logger, shell, {
       number: 56,
       url: 'https://github.com/acme/widget/pull/56',
       assignees: ['other-user'],

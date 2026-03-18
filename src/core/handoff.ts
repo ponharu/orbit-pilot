@@ -11,6 +11,12 @@ export type HandoffInspection = {
   complete: boolean;
   summary: string | null;
   pullRequest: BranchPullRequest | null;
+  hasRemoteBranch: boolean;
+};
+
+export type HandoffHints = {
+  pullRequest?: BranchPullRequest | null;
+  hasRemoteBranch?: boolean;
 };
 
 export type ShellRunner = typeof runShell;
@@ -27,8 +33,9 @@ export async function inspectHandoff(
   workspacePath: string,
   branchName: string,
   shell: ShellRunner = runShell,
+  hints: HandoffHints = {},
 ): Promise<HandoffInspection> {
-  const snapshot = await inspectWorkspaceState(target, workspacePath, branchName, shell);
+  const snapshot = await inspectWorkspaceState(target, workspacePath, branchName, shell, hints);
   const missing: string[] = [];
 
   if (snapshot.hasUncommittedChanges) {
@@ -53,6 +60,7 @@ export async function inspectHandoff(
     complete: missing.length === 0,
     summary: missing.length > 0 ? missing.join('\n') : null,
     pullRequest: snapshot.pullRequest,
+    hasRemoteBranch: snapshot.hasRemoteBranch,
   };
 }
 
@@ -60,7 +68,6 @@ export async function ensureBranchPullRequestAssignedToViewer(
   target: RepoTarget,
   workspacePath: string,
   branchName: string,
-  viewerLogin: string,
   logger: Logger,
   shell: ShellRunner = runShell,
   existingPullRequest: BranchPullRequest | null = null,
@@ -68,12 +75,12 @@ export async function ensureBranchPullRequestAssignedToViewer(
   const branchPullRequest =
     existingPullRequest ?? (await findOpenPullRequestForBranch(target, workspacePath, branchName, shell));
 
-  if (!branchPullRequest || branchPullRequest.assignees.includes(viewerLogin)) {
-    return;
+  if (!branchPullRequest) {
+    return false;
   }
 
   const result = await shell(
-    ['gh', 'pr', 'edit', String(branchPullRequest.number), '--repo', target.fullName, '--add-assignee', viewerLogin]
+    ['gh', 'pr', 'edit', String(branchPullRequest.number), '--repo', target.fullName, '--add-assignee', '@me']
       .map(shellEscape)
       .join(' '),
     { cwd: workspacePath },
@@ -86,15 +93,15 @@ export async function ensureBranchPullRequestAssignedToViewer(
       prNumber: branchPullRequest.number,
       error: result.stderr || result.stdout,
     });
-    return;
+    return false;
   }
 
   logger.info('self-assigned pull request after turn completion', {
     repo: target.fullName,
     branchName,
     prNumber: branchPullRequest.number,
-    viewerLogin,
   });
+  return true;
 }
 
 export async function findOpenPullRequestForBranch(
@@ -151,13 +158,16 @@ async function inspectWorkspaceState(
   workspacePath: string,
   branchName: string,
   shell: ShellRunner,
+  hints: HandoffHints,
 ): Promise<WorkspaceSnapshot> {
-  const remoteBranchResult = await shell(
-    ['git', 'ls-remote', '--exit-code', '--heads', 'origin', shellEscape(branchName)].join(' '),
-    { cwd: workspacePath },
-  );
-
-  const hasRemoteBranch = remoteBranchResult.exitCode === 0;
+  const hasRemoteBranch =
+    hints.hasRemoteBranch === true
+      ? true
+      : (
+          await shell(['git', 'ls-remote', '--exit-code', '--heads', 'origin', shellEscape(branchName)].join(' '), {
+            cwd: workspacePath,
+          })
+        ).exitCode === 0;
 
   const originDefaultBranchRef = hasRemoteBranch ? null : await resolveOriginDefaultBranchRef(workspacePath, shell);
 
@@ -173,7 +183,9 @@ async function inspectWorkspaceState(
             cwd: workspacePath,
           },
         ),
-    findOpenPullRequestForBranch(target, workspacePath, branchName, shell),
+    hints.pullRequest
+      ? Promise.resolve(hints.pullRequest)
+      : findOpenPullRequestForBranch(target, workspacePath, branchName, shell),
   ]);
 
   const commitsAhead = aheadResult.exitCode === 0 ? Number.parseInt(aheadResult.stdout.trim(), 10) : 0;

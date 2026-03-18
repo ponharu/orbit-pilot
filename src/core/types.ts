@@ -10,8 +10,6 @@ export type GitHubIssue = {
   identifier: string;
   title: string;
   body: string;
-  state: 'open' | 'closed';
-  assignees: string[];
   htmlUrl: string;
   createdAt: string;
   updatedAt: string;

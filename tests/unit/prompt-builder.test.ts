@@ -58,8 +58,6 @@ const issue: GitHubIssue = {
   identifier: 'acme/widget#42',
   title: 'Test issue',
   body: 'Implement the feature.',
-  state: 'open',
-  assignees: [],
   htmlUrl: 'https://github.com/acme/widget/issues/42',
   createdAt: '2026-03-15T00:00:00Z',
   updatedAt: '2026-03-15T00:00:00Z',

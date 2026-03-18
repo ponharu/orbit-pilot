@@ -28,7 +28,6 @@ export class RuntimeRegistry {
   private reconciling = false;
   private pollTimer: Timer | null = null;
   private continuous = true;
-  private viewerLogin = '';
 
   constructor(
     private readonly config: AppConfig,
@@ -42,7 +41,6 @@ export class RuntimeRegistry {
   }
 
   async startAll(once: boolean) {
-    this.viewerLogin = await this.client.getViewerLogin();
     this.continuous = !once;
 
     await this.hydrateState();
@@ -82,31 +80,23 @@ export class RuntimeRegistry {
     this.reconciling = true;
 
     try {
+      const discoveryLimitPerOwner = this.discoveryLimitPerOwner();
       const assignedIssues = await this.client.listAssignedOpenIssues(
         this.config.owners,
         this.config.excludeRepos,
-        this.discoveryLimitPerOwner(),
+        discoveryLimitPerOwner,
       );
 
       this.logger.info('discovered assigned issues', {
         owners: this.config.owners,
         excludeRepos: this.config.excludeRepos,
-        viewerLogin: this.viewerLogin,
-        discoveryLimitPerOwner: this.discoveryLimitPerOwner(),
+        discoveryLimitPerOwner,
         issueCount: assignedIssues.length,
         repositoryCount: new Set(assignedIssues.map((entry) => entry.target.fullName.toLowerCase())).size,
       });
 
       this.reconcileRunningIssues(assignedIssues);
-
-      const evaluated = [];
-
-      for (const entry of assignedIssues) {
-        const evaluation = await this.evaluateIssue(entry);
-        if (evaluation) {
-          evaluated.push(evaluation);
-        }
-      }
+      const evaluated = await this.evaluateDispatchCandidates(assignedIssues);
 
       evaluated.sort((left, right) => left.issue.createdAt.localeCompare(right.issue.createdAt));
 
@@ -147,7 +137,7 @@ export class RuntimeRegistry {
     for (const [key, running] of this.running) {
       const current = openByKey.get(key);
 
-      if (!current || current.issue.state === 'closed' || !current.issue.assignees.includes(this.viewerLogin)) {
+      if (!current) {
         this.logger.info('stopping ineligible running issue', {
           repo: running.target.fullName,
           issueNumber: running.issue.number,
@@ -167,12 +157,7 @@ export class RuntimeRegistry {
   private async evaluateIssue(entry: RepoIssueTarget) {
     const key = issueKey(entry.target.fullName, entry.issue.number);
 
-    if (
-      !entry.issue.assignees.includes(this.viewerLogin) ||
-      entry.issue.state === 'closed' ||
-      this.isClaimed(key) ||
-      this.running.has(key)
-    ) {
+    if (this.isClaimed(key) || this.running.has(key)) {
       return null;
     }
 
@@ -197,6 +182,45 @@ export class RuntimeRegistry {
     };
   }
 
+  private async evaluateDispatchCandidates(assignedIssues: RepoIssueTarget[]) {
+    const grouped = new Map<string, RepoIssueTarget[]>();
+
+    for (const entry of assignedIssues) {
+      const key = entry.target.fullName.toLowerCase();
+      const existing = grouped.get(key);
+      if (existing) {
+        existing.push(entry);
+      } else {
+        grouped.set(key, [entry]);
+      }
+    }
+
+    const repoQueues = [...grouped.values()].filter((entries) => this.repoAvailableSlots(entries[0].target) > 0);
+    const evaluatedGroups = await mapWithConcurrencyLimit(
+      repoQueues,
+      this.repoEvaluationConcurrency(),
+      async (entries) => {
+        const availableSlots = this.repoAvailableSlots(entries[0].target);
+        const evaluated: NonNullable<Awaited<ReturnType<RuntimeRegistry['evaluateIssue']>>>[] = [];
+
+        for (const entry of entries) {
+          if (evaluated.length >= availableSlots) {
+            break;
+          }
+
+          const result = await this.evaluateIssue(entry);
+          if (result) {
+            evaluated.push(result);
+          }
+        }
+
+        return evaluated;
+      },
+    );
+
+    return evaluatedGroups.flat();
+  }
+
   private dispatchIssue(
     target: RepoTarget,
     issue: GitHubIssue,
@@ -215,13 +239,15 @@ export class RuntimeRegistry {
     void (async () => {
       let existingState: WorkspaceState | null = null;
       let preferredBranchName: string | null = metadata.branchName;
+      let hydratedIssue = issue;
 
       try {
         existingState = await this.stateStore.readState(target, issue.number);
         preferredBranchName = existingState?.branchName ?? metadata.branchName;
+        hydratedIssue = await this.client.hydrateIssue(target, issue);
         const context = await this.buildAgentContext(metadata, existingState, reviewSignals);
 
-        await this.persistState(target, issue, {
+        await this.persistState(target, hydratedIssue, {
           ...this.buildStateValues(metadata, Math.max(0, metadata.attempt - 1), {
             branchName: preferredBranchName,
             status: 'running',
@@ -235,10 +261,9 @@ export class RuntimeRegistry {
         const cloneUrl = await this.client.buildCloneUrl(target);
         const handle = this.runner.run(
           target,
-          issue,
+          hydratedIssue,
           context,
           cloneUrl,
-          this.viewerLogin,
           existingState?.threadId ?? null,
           preferredBranchName,
         );
@@ -253,11 +278,11 @@ export class RuntimeRegistry {
 
         this.logger.info('agent run completed', {
           repo: target.fullName,
-          issue: issue.identifier,
+          issue: hydratedIssue.identifier,
         });
 
         this.stateByKey(key).handledRevision = revision;
-        await this.persistState(target, issue, {
+        await this.persistState(target, hydratedIssue, {
           ...this.buildStateValues(metadata, Math.max(0, metadata.attempt - 1), {
             branchName: result.branchName,
             status: 'idle',
@@ -271,7 +296,7 @@ export class RuntimeRegistry {
         this.releaseClaim(key);
       } catch (error) {
         if (this.consumeStopRequested(key)) {
-          await this.persistState(target, issue, {
+          await this.persistState(target, hydratedIssue, {
             ...this.buildStateValues(metadata, Math.max(0, metadata.attempt - 1), {
               branchName: preferredBranchName,
               status: 'idle',
@@ -290,11 +315,11 @@ export class RuntimeRegistry {
 
         this.logger.warn('agent run failed; scheduling retry', {
           repo: target.fullName,
-          issue: issue.identifier,
+          issue: hydratedIssue.identifier,
           error: errorMessage,
         });
 
-        await this.persistState(target, issue, {
+        await this.persistState(target, hydratedIssue, {
           ...this.buildStateValues(metadata, metadata.attempt, {
             branchName: error instanceof AgentTurnError ? error.branchName : preferredBranchName,
             status: this.continuous ? 'retrying' : 'failed',
@@ -429,9 +454,17 @@ export class RuntimeRegistry {
     return [...this.running.values()].filter((entry) => entry.target.fullName.toLowerCase() === repoKey).length;
   }
 
+  private repoAvailableSlots(target: RepoTarget) {
+    return Math.max(0, this.config.maxConcurrentRunsPerRepo - this.repoRunningCount(target));
+  }
+
   private discoveryLimitPerOwner() {
     const activeRepoCount = new Set(this.running.values().map((entry) => entry.target.fullName.toLowerCase())).size;
-    return Math.max(10, (activeRepoCount + 1) * this.config.maxConcurrentRunsPerRepo * 3);
+    return Math.min(20, Math.max(8, (activeRepoCount + 1) * this.config.maxConcurrentRunsPerRepo * 2));
+  }
+
+  private repoEvaluationConcurrency() {
+    return Math.max(2, this.config.maxConcurrentRunsPerRepo * 4);
   }
 
   private state(repoOrTarget: string, issueNumber: number) {
@@ -487,6 +520,26 @@ export class RuntimeRegistry {
 
 function issueKey(repoOrTarget: string, issueNumber: number): string {
   return `${repoOrTarget.toLowerCase()}#${issueNumber}`;
+}
+
+async function mapWithConcurrencyLimit<TInput, TOutput>(
+  items: TInput[],
+  concurrency: number,
+  mapper: (item: TInput) => Promise<TOutput>,
+) {
+  const results = Array.from({ length: items.length }) as TOutput[];
+  let nextIndex = 0;
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await mapper(items[currentIndex]);
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
 }
 
 function buildReviewSignalInstructions(reviewSignals: PullRequestSignal[]) {

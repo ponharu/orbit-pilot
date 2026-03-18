@@ -8,8 +8,6 @@ type PullRequestCheck = {
 };
 
 type SearchIssueResult = {
-  assignees?: Array<{ login?: string | null }> | null;
-  body?: string | null;
   createdAt?: string | null;
   isPullRequest?: boolean;
   number?: number;
@@ -17,10 +15,13 @@ type SearchIssueResult = {
     name?: string | null;
     nameWithOwner?: string | null;
   } | null;
-  state?: string | null;
-  title?: string | null;
   updatedAt?: string | null;
   url?: string | null;
+};
+
+type IssueViewResult = {
+  body?: string | null;
+  title?: string | null;
 };
 
 type LinkedPullRequestsResponse = {
@@ -179,17 +180,6 @@ export type IssueSignalContext =
 
 export class GitHubClient {
   private authTokenPromise: Promise<string> | null = null;
-  private viewerLoginPromise: Promise<string> | null = null;
-
-  async getViewerLogin() {
-    if (!this.viewerLoginPromise) {
-      this.viewerLoginPromise = this.runGhText(['api', 'user', '--jq', '.login'], process.cwd()).then((login) =>
-        login.trim().toLowerCase(),
-      );
-    }
-
-    return this.viewerLoginPromise;
-  }
 
   async listAssignedOpenIssues(
     owners: string[],
@@ -218,7 +208,7 @@ export class GitHubClient {
           '--limit',
           String(limitPerOwner),
           '--json',
-          'assignees,body,createdAt,isPullRequest,number,repository,state,title,updatedAt,url',
+          'createdAt,isPullRequest,number,repository,updatedAt,url',
         ],
         process.cwd(),
       );
@@ -267,6 +257,23 @@ export class GitHubClient {
   async buildCloneUrl(target: RepoTarget): Promise<string> {
     const token = await this.getAuthToken();
     return `https://x-access-token:${token}@github.com/${target.fullName}.git`;
+  }
+
+  async hydrateIssue(target: RepoTarget, issue: GitHubIssue): Promise<GitHubIssue> {
+    if (issue.title.trim() && issue.body.trim()) {
+      return issue;
+    }
+
+    const details = await this.runGhJson<IssueViewResult>(
+      ['issue', 'view', String(issue.number), '--repo', target.fullName, '--json', 'title,body'],
+      process.cwd(),
+    );
+
+    return {
+      ...issue,
+      title: details.title ?? issue.title,
+      body: details.body ?? issue.body,
+    };
   }
 
   private async listLinkedOpenPullRequests(target: RepoTarget, issueNumber: number): Promise<LinkedPullRequest[]> {
@@ -487,10 +494,8 @@ function normalizeSearchedIssue(item: SearchIssueResult): RepoIssueTarget | null
     issue: {
       number: item.number,
       identifier: `${fullName}#${item.number}`,
-      title: item.title ?? '',
-      body: item.body ?? '',
-      state: item.state === 'CLOSED' ? 'closed' : 'open',
-      assignees: (item.assignees ?? []).map((assignee) => assignee.login?.trim().toLowerCase() || '').filter(Boolean),
+      title: '',
+      body: '',
       htmlUrl: item.url,
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
