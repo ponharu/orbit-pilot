@@ -82,6 +82,7 @@ const LINKED_PULL_REQUESTS_QUERY = `
       issue(number: $issueNumber) {
         timelineItems(first: 100, itemTypes: [CROSS_REFERENCED_EVENT]) {
           nodes {
+            __typename
             ... on CrossReferencedEvent {
               source {
                 __typename
