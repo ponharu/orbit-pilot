@@ -35,6 +35,7 @@ describe('RuntimeRegistry', () => {
     registry.client = {
       hydrateIssue: async () => issue,
       buildCloneUrl: async () => 'https://example.com/acme/widget.git',
+      acknowledgePullRequestSignals: async () => undefined,
     };
     registry.stateStore = {
       readState: async () => null,
@@ -63,16 +64,34 @@ describe('RuntimeRegistry', () => {
         reason: 'review',
         branchName: '19-orbit-pilot',
       },
-      'review:PRR_2:COMMENTED:2026-03-19T13:02:40Z',
-      null,
+      [
+        {
+          pullRequest: {
+            number: 19,
+            updatedAt: '2026-03-19T13:02:40Z',
+            url: 'https://example.com/pull/19',
+            headRefName: '19-orbit-pilot',
+            baseRefName: 'main',
+            baseRefOid: 'abc123',
+            mergeStateStatus: 'CLEAN',
+          },
+          hasReviewActivity: true,
+          hasFailedChecks: false,
+          hasMergeConflicts: false,
+          reviewStates: ['COMMENTED'],
+          pullRequestNodeId: 'PR_kwDO123',
+          ackCommentId: null,
+          ackCommentTokens: [],
+          reactionSubjectIds: ['PRR_2'],
+          nonReactableTokens: [],
+        },
+      ],
     );
 
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(reconcileCount).toBe(1);
-    expect(registry.issueState.get('acme/widget#19')?.handledRevision).toBe(
-      'review:PRR_2:COMMENTED:2026-03-19T13:02:40Z',
-    );
+    expect(registry.issueState.has('acme/widget#19')).toBe(false);
   });
 });
 

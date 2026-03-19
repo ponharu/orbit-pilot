@@ -16,7 +16,6 @@ type IssueState = {
   claimed?: true;
   retryTimer?: Timer;
   stopRequested?: true;
-  handledRevision?: string;
 };
 
 export class RuntimeRegistry {
@@ -57,10 +56,6 @@ export class RuntimeRegistry {
     const savedStates = await this.stateStore.listAllStates();
 
     for (const state of savedStates) {
-      if (state.lastHandledRevision) {
-        this.state(state.repo, state.issueNumber).handledRevision = state.lastHandledRevision;
-      }
-
       if (state.status === 'running' || state.status === 'retrying') {
         this.logger.warn('found interrupted workspace state during startup', {
           repo: state.repo,
@@ -113,7 +108,6 @@ export class RuntimeRegistry {
             reason: entry.reason,
             branchName: entry.branchName ?? null,
           },
-          entry.revision,
           entry.reviewSignals,
         );
       }
@@ -162,20 +156,13 @@ export class RuntimeRegistry {
     }
 
     const signal = await this.client.getIssueSignalContext(entry.target, entry.issue);
-    const previous = this.issueState.get(key)?.handledRevision;
 
-    if (signal.kind === 'review' && signal.revision === null) {
-      return null;
-    }
-
-    const revision = signal.kind === 'initial' ? signal.revision : signal.revision!;
-    if (signal.kind === 'initial' ? previous !== undefined : previous !== undefined && revision === previous) {
+    if (signal.kind === 'review' && signal.signals.length === 0) {
       return null;
     }
 
     return {
       ...entry,
-      revision,
       reason: signal.kind,
       branchName: signal.branchName,
       reviewSignals: signal.kind === 'review' ? signal.signals : null,
@@ -225,7 +212,6 @@ export class RuntimeRegistry {
     target: RepoTarget,
     issue: GitHubIssue,
     metadata: RunMetadata,
-    revision: string,
     reviewSignals: PullRequestSignal[] | null = null,
   ) {
     const key = issueKey(target.fullName, issue.number);
@@ -251,7 +237,6 @@ export class RuntimeRegistry {
           ...this.buildStateValues(metadata, Math.max(0, metadata.attempt - 1), {
             branchName: preferredBranchName,
             status: 'running',
-            lastHandledRevision: this.issueState.get(key)?.handledRevision ?? null,
             lastError: null,
             lastFailureContext: existingState?.lastFailureContext ?? null,
             threadId: existingState?.threadId ?? null,
@@ -281,12 +266,13 @@ export class RuntimeRegistry {
           issue: hydratedIssue.identifier,
         });
 
-        this.stateByKey(key).handledRevision = revision;
+        if (metadata.reason === 'review' && reviewSignals && reviewSignals.length > 0) {
+          await this.client.acknowledgePullRequestSignals(target, reviewSignals);
+        }
         await this.persistState(target, hydratedIssue, {
           ...this.buildStateValues(metadata, Math.max(0, metadata.attempt - 1), {
             branchName: result.branchName,
             status: 'idle',
-            lastHandledRevision: revision,
             lastError: null,
             lastFailureContext: null,
             threadId: result.threadId,
@@ -303,7 +289,6 @@ export class RuntimeRegistry {
             ...this.buildStateValues(metadata, Math.max(0, metadata.attempt - 1), {
               branchName: preferredBranchName,
               status: 'idle',
-              lastHandledRevision: this.issueState.get(key)?.handledRevision ?? null,
               lastError: null,
               lastFailureContext: null,
               threadId: existingState?.threadId ?? null,
@@ -326,7 +311,6 @@ export class RuntimeRegistry {
           ...this.buildStateValues(metadata, metadata.attempt, {
             branchName: error instanceof AgentTurnError ? error.branchName : preferredBranchName,
             status: this.continuous ? 'retrying' : 'failed',
-            lastHandledRevision: this.issueState.get(key)?.handledRevision ?? null,
             lastError: errorMessage,
             lastFailureContext:
               error instanceof AgentTurnError ? error.failureContext : (existingState?.lastFailureContext ?? null),
@@ -335,12 +319,12 @@ export class RuntimeRegistry {
         });
 
         this.running.delete(key);
-        this.scheduleRetry(target, issue, metadata.attempt + 1, revision);
+        this.scheduleRetry(target, issue, metadata.attempt + 1);
       }
     })();
   }
 
-  private scheduleRetry(target: RepoTarget, issue: GitHubIssue, attempt: number, revision: string) {
+  private scheduleRetry(target: RepoTarget, issue: GitHubIssue, attempt: number) {
     const key = issueKey(target.fullName, issue.number);
 
     if (!this.continuous) {
@@ -366,16 +350,11 @@ export class RuntimeRegistry {
         if (this.repoRunningCount(target) < this.config.maxConcurrentRunsPerRepo) {
           const savedState = await this.stateStore.readState(target, issue.number);
           const reason = savedState?.lastTrigger === 'review' ? 'review' : 'initial';
-          this.dispatchIssue(
-            target,
-            issue,
-            {
-              attempt,
-              reason,
-              branchName: savedState?.branchName ?? null,
-            },
-            revision,
-          );
+          this.dispatchIssue(target, issue, {
+            attempt,
+            reason,
+            branchName: savedState?.branchName ?? null,
+          });
         } else {
           void this.reconcile();
         }
@@ -411,10 +390,7 @@ export class RuntimeRegistry {
   private buildStateValues(
     metadata: RunMetadata,
     retryCount: number,
-    values: Pick<
-      WorkspaceState,
-      'branchName' | 'status' | 'lastHandledRevision' | 'lastError' | 'lastFailureContext' | 'threadId'
-    >,
+    values: Pick<WorkspaceState, 'branchName' | 'status' | 'lastError' | 'lastFailureContext' | 'threadId'>,
   ): Omit<WorkspaceState, 'issueNumber' | 'repo' | 'updatedAt'> {
     return {
       ...values,
@@ -486,7 +462,7 @@ export class RuntimeRegistry {
   }
 
   private cleanupState(key: string, state = this.issueState.get(key)) {
-    if (state && !state.claimed && !state.retryTimer && !state.stopRequested && !state.handledRevision) {
+    if (state && !state.claimed && !state.retryTimer && !state.stopRequested) {
       this.issueState.delete(key);
     }
   }

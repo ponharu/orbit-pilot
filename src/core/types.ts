@@ -36,7 +36,6 @@ export type WorkspaceState = {
   repo: string;
   branchName: string | null;
   status: 'idle' | 'running' | 'retrying' | 'failed';
-  lastHandledRevision: string | null;
   lastRunAt: string | null;
   lastTrigger: string | null;
   retryCount: number;

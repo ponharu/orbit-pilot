@@ -60,7 +60,6 @@ function createState(issueNumber: number, repo: string, status: WorkspaceState['
     repo,
     branchName: '42-orbit-pilot',
     status,
-    lastHandledRevision: '2026-03-15T00:00:00Z',
     lastRunAt: '2026-03-15T00:00:00Z',
     lastTrigger: 'poll',
     retryCount: 0,

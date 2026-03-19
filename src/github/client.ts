@@ -1,11 +1,13 @@
 import { graphql as requestGraphql } from '@octokit/graphql';
 import type { GitHubIssue, RepoTarget } from '../core/types';
+import {
+  buildPendingPullRequestSignalDetails,
+  buildPullRequestSignalSnapshot,
+  buildSignalAckCommentBody,
+  type PullRequestSignalCheck,
+  type PullRequestSignalSnapshotData,
+} from './pull-request-signals';
 import { runShell } from '../util/shell';
-
-type PullRequestCheck = {
-  bucket?: string;
-  completedAt?: string | null;
-};
 
 type SearchIssueResult = {
   createdAt?: string | null;
@@ -49,35 +51,7 @@ type LinkedPullRequestsResponse = {
 
 type PullRequestSignalSnapshotResponse = {
   repository?: {
-    pullRequest?: {
-      comments: {
-        nodes?: Array<{
-          createdAt?: string | null;
-          updatedAt?: string | null;
-        } | null> | null;
-      };
-      reviews: {
-        nodes?: Array<{
-          id?: string | null;
-          state?: string | null;
-          submittedAt?: string | null;
-          updatedAt?: string | null;
-        } | null> | null;
-      };
-      reviewThreads: {
-        nodes?: Array<{
-          id?: string | null;
-          isResolved?: boolean | null;
-          comments: {
-            nodes?: Array<{
-              id?: string | null;
-              createdAt?: string | null;
-              updatedAt?: string | null;
-            } | null> | null;
-          };
-        } | null> | null;
-      };
-    } | null;
+    pullRequest?: PullRequestSignalSnapshotData | null;
   } | null;
 };
 
@@ -114,10 +88,17 @@ const PULL_REQUEST_SIGNAL_SNAPSHOT_QUERY = `
   query PullRequestSignalSnapshot($owner: String!, $repo: String!, $prNumber: Int!) {
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $prNumber) {
+        id
         comments(first: 50) {
           nodes {
+            id
+            body
             createdAt
             updatedAt
+            reactionGroups {
+              content
+              viewerHasReacted
+            }
           }
         }
         reviews(last: 100) {
@@ -126,6 +107,10 @@ const PULL_REQUEST_SIGNAL_SNAPSHOT_QUERY = `
             state
             submittedAt
             updatedAt
+            reactionGroups {
+              content
+              viewerHasReacted
+            }
           }
         }
         reviewThreads(last: 100) {
@@ -137,6 +122,10 @@ const PULL_REQUEST_SIGNAL_SNAPSHOT_QUERY = `
                 id
                 createdAt
                 updatedAt
+                reactionGroups {
+                  content
+                  viewerHasReacted
+                }
               }
             }
           }
@@ -145,13 +134,6 @@ const PULL_REQUEST_SIGNAL_SNAPSHOT_QUERY = `
     }
   }
 `;
-
-type PullRequestSignalSnapshot = {
-  reviewTokens: string[];
-  reviewStates: string[];
-  issueCommentTimestamps: string[];
-  unresolvedThreadTokens: string[];
-};
 
 export type LinkedPullRequest = {
   number: number;
@@ -169,12 +151,12 @@ export type PullRequestSignal = {
   hasFailedChecks: boolean;
   hasMergeConflicts: boolean;
   reviewStates: string[];
-  revision: string | null;
+  pullRequestNodeId: string;
+  ackCommentId: string | null;
+  ackCommentTokens: string[];
+  reactionSubjectIds: string[];
+  nonReactableTokens: string[];
 };
-
-export type PullRequestSignalSnapshotData = NonNullable<
-  NonNullable<PullRequestSignalSnapshotResponse['repository']>['pullRequest']
->;
 
 export type RepoIssueTarget = {
   target: RepoTarget;
@@ -184,14 +166,12 @@ export type RepoIssueTarget = {
 export type IssueSignalContext =
   | {
       kind: 'initial';
-      revision: string;
       branchName: null;
       signals: [];
     }
   | {
       kind: 'review';
       branchName: string | null;
-      revision: string | null;
       signals: PullRequestSignal[];
     };
 
@@ -251,7 +231,6 @@ export class GitHubClient {
     if (pullRequests.length === 0) {
       return {
         kind: 'initial',
-        revision: issue.updatedAt,
         branchName: null,
         signals: [],
       };
@@ -261,14 +240,78 @@ export class GitHubClient {
     const signals = await Promise.all(
       pullRequests.map((pullRequest) => this.getPullRequestSignal(target, pullRequest)),
     );
-    const tokens = signals.flatMap((signal) => (signal.revision ? [signal.revision] : []));
 
     return {
       kind: 'review',
       branchName,
-      revision: tokens.length > 0 ? tokens.toSorted().join('|') : null,
-      signals,
+      signals: signals.filter(
+        (signal) => signal.hasReviewActivity || signal.hasFailedChecks || signal.hasMergeConflicts,
+      ),
     };
+  }
+
+  async acknowledgePullRequestSignals(_target: RepoTarget, signals: PullRequestSignal[]) {
+    for (const signal of signals) {
+      for (const subjectId of signal.reactionSubjectIds) {
+        await this.graphqlQuery(
+          `
+            mutation AddReaction($subjectId: ID!) {
+              addReaction(input: { subjectId: $subjectId, content: EYES }) {
+                reaction {
+                  content
+                }
+              }
+            }
+          `,
+          {
+            subjectId,
+          },
+        );
+      }
+
+      if (signal.nonReactableTokens.length === 0) {
+        continue;
+      }
+
+      const tokens = [...new Set([...signal.ackCommentTokens, ...signal.nonReactableTokens])].toSorted();
+      const body = buildSignalAckCommentBody(tokens);
+
+      if (signal.ackCommentId) {
+        await this.graphqlQuery(
+          `
+            mutation UpdateIssueComment($id: ID!, $body: String!) {
+              updateIssueComment(input: { id: $id, body: $body }) {
+                issueComment {
+                  id
+                }
+              }
+            }
+          `,
+          {
+            id: signal.ackCommentId,
+            body,
+          },
+        );
+      } else {
+        await this.graphqlQuery(
+          `
+            mutation AddComment($subjectId: ID!, $body: String!) {
+              addComment(input: { subjectId: $subjectId, body: $body }) {
+                commentEdge {
+                  node {
+                    id
+                  }
+                }
+              }
+            }
+          `,
+          {
+            subjectId: signal.pullRequestNodeId,
+            body,
+          },
+        );
+      }
+    }
   }
 
   async buildCloneUrl(target: RepoTarget): Promise<string> {
@@ -331,43 +374,29 @@ export class GitHubClient {
   private async getPullRequestSignal(target: RepoTarget, pullRequest: LinkedPullRequest): Promise<PullRequestSignal> {
     const [snapshot, checks] = await Promise.all([
       this.getPullRequestSignalSnapshot(target, pullRequest.number),
-      this.runGhJsonAllowing<PullRequestCheck[]>(
-        ['pr', 'checks', String(pullRequest.number), '--repo', target.fullName, '--json', 'bucket,completedAt'],
+      this.runGhJsonAllowing<PullRequestSignalCheck[]>(
+        ['pr', 'checks', String(pullRequest.number), '--repo', target.fullName, '--json', 'name,bucket,completedAt'],
         process.cwd(),
         [8],
       ),
     ]);
-
-    const failedCheckTimestamps = checks.flatMap((item) =>
-      item.bucket === 'fail' && item.completedAt ? [item.completedAt] : [],
-    );
-    const hasReviewActivity =
-      snapshot.reviewTokens.length > 0 ||
-      snapshot.issueCommentTimestamps.length > 0 ||
-      snapshot.unresolvedThreadTokens.length > 0;
-    const hasFailedChecks = failedCheckTimestamps.length > 0;
-    const hasMergeConflicts = pullRequest.mergeStateStatus === 'DIRTY';
-    const tokens = [
-      ...snapshot.reviewTokens,
-      ...snapshot.issueCommentTimestamps,
-      ...snapshot.unresolvedThreadTokens,
-      ...failedCheckTimestamps,
-      ...(hasMergeConflicts && pullRequest.baseRefOid
-        ? [`conflict:${pullRequest.number}:${pullRequest.baseRefOid}`]
-        : []),
-    ];
+    const pending = buildPendingPullRequestSignalDetails(snapshot, pullRequest, checks);
 
     return {
       pullRequest,
-      hasReviewActivity,
-      hasFailedChecks,
-      hasMergeConflicts,
-      reviewStates: snapshot.reviewStates,
-      revision: tokens.length > 0 ? tokens.toSorted().join('|') : null,
+      hasReviewActivity: pending.hasReviewActivity,
+      hasFailedChecks: pending.hasFailedChecks,
+      hasMergeConflicts: pending.hasMergeConflicts,
+      reviewStates: pending.reviewStates,
+      pullRequestNodeId: snapshot.pullRequestId,
+      ackCommentId: pending.ackCommentId,
+      ackCommentTokens: pending.ackCommentTokens,
+      reactionSubjectIds: pending.reactionSubjectIds,
+      nonReactableTokens: pending.nonReactableTokens,
     };
   }
 
-  private async getPullRequestSignalSnapshot(target: RepoTarget, prNumber: number): Promise<PullRequestSignalSnapshot> {
+  private async getPullRequestSignalSnapshot(target: RepoTarget, prNumber: number) {
     const result = await this.graphqlQuery<PullRequestSignalSnapshotResponse>(PULL_REQUEST_SIGNAL_SNAPSHOT_QUERY, {
       owner: target.owner,
       repo: target.repo,
@@ -507,52 +536,4 @@ function normalizeSearchedIssue(item: SearchIssueResult): RepoIssueTarget | null
 
 function shellEscape(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-export function buildPullRequestSignalSnapshot(pullRequest: PullRequestSignalSnapshotData): PullRequestSignalSnapshot {
-  const reviewStates = (pullRequest.reviews.nodes ?? []).flatMap((review) => {
-    const state = normalizeReviewState(review?.state);
-    return state ? [state] : [];
-  });
-
-  return {
-    reviewTokens: (pullRequest.reviews.nodes ?? []).flatMap((review) => {
-      const reviewId = review?.id?.trim() || null;
-      const timestamp = review?.updatedAt ?? review?.submittedAt ?? null;
-      if (!reviewId || !timestamp) {
-        return [];
-      }
-
-      const state = normalizeReviewState(review?.state) ?? 'UNKNOWN';
-      return [`review:${reviewId}:${state}:${timestamp}`];
-    }),
-    reviewStates: [...new Set(reviewStates)],
-    issueCommentTimestamps: (pullRequest.comments.nodes ?? []).flatMap((comment) => {
-      const timestamp = comment?.updatedAt ?? comment?.createdAt ?? null;
-      return timestamp ? [timestamp] : [];
-    }),
-    unresolvedThreadTokens: (pullRequest.reviewThreads.nodes ?? []).flatMap((thread) => {
-      const threadId = thread?.id?.trim() || null;
-      if (thread?.isResolved || !threadId) {
-        return [];
-      }
-
-      const latestTimestamp =
-        (thread?.comments.nodes ?? []).reduce<string | null>((latest, comment) => {
-          const timestamp = comment?.updatedAt ?? comment?.createdAt ?? null;
-          if (!timestamp) {
-            return latest;
-          }
-
-          return latest && latest.localeCompare(timestamp) > 0 ? latest : timestamp;
-        }, null) ?? 'unresolved';
-
-      return [`thread:${threadId}:${latestTimestamp}`];
-    }),
-  };
-}
-
-function normalizeReviewState(state: string | null | undefined) {
-  const normalized = state?.trim().toUpperCase() ?? '';
-  return normalized.length > 0 ? normalized : null;
 }
