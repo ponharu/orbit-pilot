@@ -294,6 +294,9 @@ export class RuntimeRegistry {
         });
         this.running.delete(key);
         this.releaseClaim(key);
+        if (this.continuous) {
+          void this.reconcile();
+        }
       } catch (error) {
         if (this.consumeStopRequested(key)) {
           await this.persistState(target, hydratedIssue, {
@@ -546,6 +549,9 @@ function buildReviewSignalInstructions(reviewSignals: PullRequestSignal[]) {
   return reviewSignals
     .map((signal) => {
       const actions: string[] = [];
+      if (signal.reviewStates.length > 0) {
+        actions.push(`submitted reviews (${signal.reviewStates.join(', ')})`);
+      }
       if (signal.hasReviewActivity) {
         actions.push('review comments or unresolved review threads');
       }

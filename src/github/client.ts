@@ -58,14 +58,19 @@ type PullRequestSignalSnapshotResponse = {
       };
       reviews: {
         nodes?: Array<{
+          id?: string | null;
+          state?: string | null;
           submittedAt?: string | null;
+          updatedAt?: string | null;
         } | null> | null;
       };
       reviewThreads: {
         nodes?: Array<{
+          id?: string | null;
           isResolved?: boolean | null;
           comments: {
             nodes?: Array<{
+              id?: string | null;
               createdAt?: string | null;
               updatedAt?: string | null;
             } | null> | null;
@@ -115,16 +120,21 @@ const PULL_REQUEST_SIGNAL_SNAPSHOT_QUERY = `
             updatedAt
           }
         }
-        reviews(first: 50) {
+        reviews(last: 100) {
           nodes {
+            id
+            state
             submittedAt
+            updatedAt
           }
         }
-        reviewThreads(first: 100) {
+        reviewThreads(last: 100) {
           nodes {
+            id
             isResolved
-            comments(first: 20) {
+            comments(last: 50) {
               nodes {
+                id
                 createdAt
                 updatedAt
               }
@@ -137,9 +147,10 @@ const PULL_REQUEST_SIGNAL_SNAPSHOT_QUERY = `
 `;
 
 type PullRequestSignalSnapshot = {
-  reviewTimestamps: string[];
+  reviewTokens: string[];
+  reviewStates: string[];
   issueCommentTimestamps: string[];
-  unresolvedThreadCommentTimestamps: string[];
+  unresolvedThreadTokens: string[];
 };
 
 export type LinkedPullRequest = {
@@ -157,8 +168,13 @@ export type PullRequestSignal = {
   hasReviewActivity: boolean;
   hasFailedChecks: boolean;
   hasMergeConflicts: boolean;
+  reviewStates: string[];
   revision: string | null;
 };
+
+export type PullRequestSignalSnapshotData = NonNullable<
+  NonNullable<PullRequestSignalSnapshotResponse['repository']>['pullRequest']
+>;
 
 export type RepoIssueTarget = {
   target: RepoTarget;
@@ -326,15 +342,15 @@ export class GitHubClient {
       item.bucket === 'fail' && item.completedAt ? [item.completedAt] : [],
     );
     const hasReviewActivity =
-      snapshot.reviewTimestamps.length > 0 ||
+      snapshot.reviewTokens.length > 0 ||
       snapshot.issueCommentTimestamps.length > 0 ||
-      snapshot.unresolvedThreadCommentTimestamps.length > 0;
+      snapshot.unresolvedThreadTokens.length > 0;
     const hasFailedChecks = failedCheckTimestamps.length > 0;
     const hasMergeConflicts = pullRequest.mergeStateStatus === 'DIRTY';
     const tokens = [
-      ...snapshot.reviewTimestamps,
+      ...snapshot.reviewTokens,
       ...snapshot.issueCommentTimestamps,
-      ...snapshot.unresolvedThreadCommentTimestamps,
+      ...snapshot.unresolvedThreadTokens,
       ...failedCheckTimestamps,
       ...(hasMergeConflicts && pullRequest.baseRefOid
         ? [`conflict:${pullRequest.number}:${pullRequest.baseRefOid}`]
@@ -346,6 +362,7 @@ export class GitHubClient {
       hasReviewActivity,
       hasFailedChecks,
       hasMergeConflicts,
+      reviewStates: snapshot.reviewStates,
       revision: tokens.length > 0 ? tokens.toSorted().join('|') : null,
     };
   }
@@ -362,23 +379,7 @@ export class GitHubClient {
       throw new Error(`pull request not found: ${target.fullName}#${prNumber}`);
     }
 
-    return {
-      reviewTimestamps: (pullRequest.reviews.nodes ?? []).flatMap((review) =>
-        review?.submittedAt ? [review.submittedAt] : [],
-      ),
-      issueCommentTimestamps: (pullRequest.comments.nodes ?? []).flatMap((comment) => {
-        const timestamp = comment?.updatedAt ?? comment?.createdAt ?? null;
-        return timestamp ? [timestamp] : [];
-      }),
-      unresolvedThreadCommentTimestamps: (pullRequest.reviewThreads.nodes ?? []).flatMap((thread) =>
-        thread?.isResolved
-          ? []
-          : (thread?.comments.nodes ?? []).flatMap((comment) => {
-              const timestamp = comment?.updatedAt ?? comment?.createdAt ?? null;
-              return timestamp ? [timestamp] : [];
-            }),
-      ),
-    };
+    return buildPullRequestSignalSnapshot(pullRequest);
   }
 
   private async graphqlQuery<TData>(query: string, variables: Record<string, unknown>): Promise<TData> {
@@ -506,4 +507,52 @@ function normalizeSearchedIssue(item: SearchIssueResult): RepoIssueTarget | null
 
 function shellEscape(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+export function buildPullRequestSignalSnapshot(pullRequest: PullRequestSignalSnapshotData): PullRequestSignalSnapshot {
+  const reviewStates = (pullRequest.reviews.nodes ?? []).flatMap((review) => {
+    const state = normalizeReviewState(review?.state);
+    return state ? [state] : [];
+  });
+
+  return {
+    reviewTokens: (pullRequest.reviews.nodes ?? []).flatMap((review) => {
+      const reviewId = review?.id?.trim() || null;
+      const timestamp = review?.updatedAt ?? review?.submittedAt ?? null;
+      if (!reviewId || !timestamp) {
+        return [];
+      }
+
+      const state = normalizeReviewState(review?.state) ?? 'UNKNOWN';
+      return [`review:${reviewId}:${state}:${timestamp}`];
+    }),
+    reviewStates: [...new Set(reviewStates)],
+    issueCommentTimestamps: (pullRequest.comments.nodes ?? []).flatMap((comment) => {
+      const timestamp = comment?.updatedAt ?? comment?.createdAt ?? null;
+      return timestamp ? [timestamp] : [];
+    }),
+    unresolvedThreadTokens: (pullRequest.reviewThreads.nodes ?? []).flatMap((thread) => {
+      const threadId = thread?.id?.trim() || null;
+      if (thread?.isResolved || !threadId) {
+        return [];
+      }
+
+      const latestTimestamp =
+        (thread?.comments.nodes ?? []).reduce<string | null>((latest, comment) => {
+          const timestamp = comment?.updatedAt ?? comment?.createdAt ?? null;
+          if (!timestamp) {
+            return latest;
+          }
+
+          return latest && latest.localeCompare(timestamp) > 0 ? latest : timestamp;
+        }, null) ?? 'unresolved';
+
+      return [`thread:${threadId}:${latestTimestamp}`];
+    }),
+  };
+}
+
+function normalizeReviewState(state: string | null | undefined) {
+  const normalized = state?.trim().toUpperCase() ?? '';
+  return normalized.length > 0 ? normalized : null;
 }
