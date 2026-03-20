@@ -48,38 +48,18 @@ export type PullRequestSignalItem = {
 
 export type PullRequestSignalSnapshot = {
   pullRequestId: string;
-  ackCommentId: string | null;
-  ackedNonReactableTokens: string[];
   reviewItems: PullRequestSignalItem[];
   issueCommentItems: PullRequestSignalItem[];
   unresolvedThreadItems: PullRequestSignalItem[];
 };
 
-export type PullRequestSignalCheck = {
-  bucket?: string;
-  name?: string | null;
-  completedAt?: string | null;
-};
-
-export type PullRequestSignalSource = {
-  number: number;
-  baseRefOid: string | null;
-  mergeStateStatus: string | null;
-};
-
 export type PendingPullRequestSignalDetails = {
   hasReviewActivity: boolean;
-  hasFailedChecks: boolean;
-  hasMergeConflicts: boolean;
   reviewStates: string[];
-  ackCommentId: string | null;
-  ackCommentTokens: string[];
   reactionSubjectIds: string[];
-  nonReactableTokens: string[];
 };
 
 const SIGNAL_ACK_COMMENT_MARKER = '<!-- orbit-pilot-signal-acks';
-const SIGNAL_ACK_COMMENT_FOOTER = '-->';
 
 export function buildPullRequestSignalSnapshot(pullRequest: PullRequestSignalSnapshotData): PullRequestSignalSnapshot {
   const pullRequestId = pullRequest.id?.trim() || null;
@@ -87,13 +67,8 @@ export function buildPullRequestSignalSnapshot(pullRequest: PullRequestSignalSna
     throw new Error('pull request node id is missing');
   }
 
-  const ackComment = (pullRequest.comments.nodes ?? []).find((comment) => hasSignalAckComment(comment?.body));
-  const ackedNonReactableTokens = ackComment ? parseSignalAckCommentBody(ackComment.body ?? '') : [];
-
   return {
     pullRequestId,
-    ackCommentId: ackComment?.id?.trim() || null,
-    ackedNonReactableTokens,
     reviewItems: (pullRequest.reviews.nodes ?? []).flatMap((review) => {
       const reviewId = review?.id?.trim() || null;
       const timestamp = review?.updatedAt ?? review?.submittedAt ?? null;
@@ -175,35 +150,15 @@ export function buildPullRequestSignalSnapshot(pullRequest: PullRequestSignalSna
 
 export function buildPendingPullRequestSignalDetails(
   snapshot: PullRequestSignalSnapshot,
-  pullRequest: PullRequestSignalSource,
-  checks: PullRequestSignalCheck[],
 ): PendingPullRequestSignalDetails {
   const pendingReviewItems = snapshot.reviewItems.filter((item) => !item.acknowledged);
   const pendingIssueCommentItems = snapshot.issueCommentItems.filter((item) => !item.acknowledged);
   const pendingUnresolvedThreadItems = snapshot.unresolvedThreadItems.filter((item) => !item.acknowledged);
-  const ackedNonReactableTokens = new Set(snapshot.ackedNonReactableTokens);
-  const pendingFailedCheckTokens = checks
-    .flatMap((item, index) =>
-      item.bucket === 'fail' && item.completedAt
-        ? [`check:${item.name?.trim() || item.bucket || 'unknown'}:${item.completedAt}:${index}`]
-        : [],
-    )
-    .filter((token) => !ackedNonReactableTokens.has(token));
-
-  const conflictToken =
-    pullRequest.mergeStateStatus === 'DIRTY' && pullRequest.baseRefOid
-      ? `conflict:${pullRequest.number}:${pullRequest.baseRefOid}`
-      : null;
-  const pendingConflictTokens = conflictToken && !ackedNonReactableTokens.has(conflictToken) ? [conflictToken] : [];
 
   return {
     hasReviewActivity:
       pendingReviewItems.length > 0 || pendingIssueCommentItems.length > 0 || pendingUnresolvedThreadItems.length > 0,
-    hasFailedChecks: pendingFailedCheckTokens.length > 0,
-    hasMergeConflicts: pendingConflictTokens.length > 0,
     reviewStates: [...new Set(pendingReviewItems.flatMap((item) => (item.reviewState ? [item.reviewState] : [])))],
-    ackCommentId: snapshot.ackCommentId,
-    ackCommentTokens: snapshot.ackedNonReactableTokens,
     reactionSubjectIds: [
       ...new Set(
         [...pendingReviewItems, ...pendingIssueCommentItems, ...pendingUnresolvedThreadItems]
@@ -211,14 +166,7 @@ export function buildPendingPullRequestSignalDetails(
           .filter(Boolean),
       ),
     ],
-    nonReactableTokens: [...pendingFailedCheckTokens, ...pendingConflictTokens],
   };
-}
-
-export function buildSignalAckCommentBody(tokens: string[]) {
-  return [`👀 orbit-pilot acknowledged signals`, SIGNAL_ACK_COMMENT_MARKER, ...tokens, SIGNAL_ACK_COMMENT_FOOTER].join(
-    '\n',
-  );
 }
 
 function normalizeReviewState(state: string | null | undefined) {
@@ -234,18 +182,4 @@ function hasEyesReaction(reactionGroups: ReactionGroup[] | null | undefined) {
 
 function hasSignalAckComment(body: string | null | undefined) {
   return (body ?? '').includes(SIGNAL_ACK_COMMENT_MARKER);
-}
-
-function parseSignalAckCommentBody(body: string) {
-  const start = body.indexOf(SIGNAL_ACK_COMMENT_MARKER);
-  const end = body.indexOf(SIGNAL_ACK_COMMENT_FOOTER, start);
-  if (start < 0 || end < 0) {
-    return [];
-  }
-
-  return body
-    .slice(start + SIGNAL_ACK_COMMENT_MARKER.length, end)
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
 }

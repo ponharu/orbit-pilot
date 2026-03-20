@@ -267,7 +267,7 @@ export class RuntimeRegistry {
         });
 
         if (metadata.reason === 'review' && reviewSignals && reviewSignals.length > 0) {
-          await this.client.acknowledgePullRequestSignals(target, reviewSignals);
+          await this.client.acknowledgePullRequestSignals(reviewSignals);
         }
         await this.persistState(target, hydratedIssue, {
           ...this.buildStateValues(metadata, Math.max(0, metadata.attempt - 1), {
@@ -530,12 +530,6 @@ function buildReviewSignalInstructions(reviewSignals: PullRequestSignal[]) {
       }
       if (signal.hasReviewActivity) {
         actions.push('review comments or unresolved review threads');
-      }
-      if (signal.hasFailedChecks) {
-        actions.push('failing checks');
-      }
-      if (signal.hasMergeConflicts) {
-        actions.push('merge conflicts');
       }
 
       const bullets =

@@ -88,8 +88,6 @@ describe('buildPullRequestSignalSnapshot', () => {
     } satisfies PullRequestSignalSnapshotData);
 
     expect(snapshot.pullRequestId).toBe('PR_kwDO123');
-    expect(snapshot.ackCommentId).toBe(null);
-    expect(snapshot.ackedNonReactableTokens).toEqual([]);
     expect(snapshot.reviewItems).toEqual([
       {
         token: 'review:PRR_1:COMMENTED:2026-03-19T13:14:26Z',
@@ -122,7 +120,7 @@ describe('buildPullRequestSignalSnapshot', () => {
     ]);
   });
 
-  test('parses the managed ack comment and ignores it as a PR comment signal', () => {
+  test('ignores the legacy managed ack comment as a PR comment signal', () => {
     const snapshot = buildPullRequestSignalSnapshot({
       id: 'PR_kwDO456',
       comments: {
@@ -166,8 +164,6 @@ describe('buildPullRequestSignalSnapshot', () => {
       },
     } satisfies PullRequestSignalSnapshotData);
 
-    expect(snapshot.ackCommentId).toBe('IC_ack');
-    expect(snapshot.ackedNonReactableTokens).toEqual(['check:test:2026-03-19T13:04:00Z:0']);
     expect(snapshot.issueCommentItems).toEqual([]);
     expect(snapshot.reviewItems).toEqual([
       {

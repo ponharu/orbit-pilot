@@ -3,8 +3,6 @@ import type { GitHubIssue, RepoTarget } from '../core/types';
 import {
   buildPendingPullRequestSignalDetails,
   buildPullRequestSignalSnapshot,
-  buildSignalAckCommentBody,
-  type PullRequestSignalCheck,
   type PullRequestSignalSnapshotData,
 } from './pull-request-signals';
 import { runShell } from '../util/shell';
@@ -148,14 +146,9 @@ export type LinkedPullRequest = {
 export type PullRequestSignal = {
   pullRequest: LinkedPullRequest;
   hasReviewActivity: boolean;
-  hasFailedChecks: boolean;
-  hasMergeConflicts: boolean;
   reviewStates: string[];
   pullRequestNodeId: string;
-  ackCommentId: string | null;
-  ackCommentTokens: string[];
   reactionSubjectIds: string[];
-  nonReactableTokens: string[];
 };
 
 export type RepoIssueTarget = {
@@ -244,13 +237,11 @@ export class GitHubClient {
     return {
       kind: 'review',
       branchName,
-      signals: signals.filter(
-        (signal) => signal.hasReviewActivity || signal.hasFailedChecks || signal.hasMergeConflicts,
-      ),
+      signals: signals.filter((signal) => signal.hasReviewActivity),
     };
   }
 
-  async acknowledgePullRequestSignals(_target: RepoTarget, signals: PullRequestSignal[]) {
+  async acknowledgePullRequestSignals(signals: PullRequestSignal[]) {
     for (const signal of signals) {
       for (const subjectId of signal.reactionSubjectIds) {
         await this.graphqlQuery(
@@ -265,49 +256,6 @@ export class GitHubClient {
           `,
           {
             subjectId,
-          },
-        );
-      }
-
-      if (signal.nonReactableTokens.length === 0) {
-        continue;
-      }
-
-      const tokens = [...new Set([...signal.ackCommentTokens, ...signal.nonReactableTokens])].toSorted();
-      const body = buildSignalAckCommentBody(tokens);
-
-      if (signal.ackCommentId) {
-        await this.graphqlQuery(
-          `
-            mutation UpdateIssueComment($id: ID!, $body: String!) {
-              updateIssueComment(input: { id: $id, body: $body }) {
-                issueComment {
-                  id
-                }
-              }
-            }
-          `,
-          {
-            id: signal.ackCommentId,
-            body,
-          },
-        );
-      } else {
-        await this.graphqlQuery(
-          `
-            mutation AddComment($subjectId: ID!, $body: String!) {
-              addComment(input: { subjectId: $subjectId, body: $body }) {
-                commentEdge {
-                  node {
-                    id
-                  }
-                }
-              }
-            }
-          `,
-          {
-            subjectId: signal.pullRequestNodeId,
-            body,
           },
         );
       }
@@ -372,27 +320,15 @@ export class GitHubClient {
   }
 
   private async getPullRequestSignal(target: RepoTarget, pullRequest: LinkedPullRequest): Promise<PullRequestSignal> {
-    const [snapshot, checks] = await Promise.all([
-      this.getPullRequestSignalSnapshot(target, pullRequest.number),
-      this.runGhJsonAllowing<PullRequestSignalCheck[]>(
-        ['pr', 'checks', String(pullRequest.number), '--repo', target.fullName, '--json', 'name,bucket,completedAt'],
-        process.cwd(),
-        [8],
-      ),
-    ]);
-    const pending = buildPendingPullRequestSignalDetails(snapshot, pullRequest, checks);
+    const snapshot = await this.getPullRequestSignalSnapshot(target, pullRequest.number);
+    const pending = buildPendingPullRequestSignalDetails(snapshot);
 
     return {
       pullRequest,
       hasReviewActivity: pending.hasReviewActivity,
-      hasFailedChecks: pending.hasFailedChecks,
-      hasMergeConflicts: pending.hasMergeConflicts,
       reviewStates: pending.reviewStates,
       pullRequestNodeId: snapshot.pullRequestId,
-      ackCommentId: pending.ackCommentId,
-      ackCommentTokens: pending.ackCommentTokens,
       reactionSubjectIds: pending.reactionSubjectIds,
-      nonReactableTokens: pending.nonReactableTokens,
     };
   }
 
