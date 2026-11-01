@@ -42,9 +42,11 @@
     "format": "bunx oxfmt . --write",
     "lint": "bunx oxlint .",
     "hooks:install": "bunx lefthook install",
-    "check": "tsc --noEmit",
+    "check": "bun run typecheck && bun run lint && bun run format:check",
     "test": "bun test ./tests/unit",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "format:check": "oxfmt --check .",
+    "release": "semantic-release"
   },
   "dependencies": {
     "@octokit/graphql": "9.0.5",

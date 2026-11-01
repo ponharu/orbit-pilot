@@ -4,38 +4,44 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
+  test:
+    if: github.repository == 'ponharu/orbit-pilot' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/test.yml
+
   release:
+    needs: test
+    if: github.repository == 'ponharu/orbit-pilot' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      NPM_CONFIG_IGNORE_SCRIPTS: 'true'
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
-      - uses: jdx/mise-action@v5.2.5
+      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           install: true
           cache: true
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Typecheck
-        run: bun run check
-
-      - name: Unit tests
-        run: bun run test
+      - name: Install release dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: 'true'
-        run: bunx semantic-release
+        run: bun run release

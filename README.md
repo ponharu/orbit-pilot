@@ -31,7 +31,7 @@ graph LR
 
 ## Requirements
 
-- Bun `>= 1.3.10`
+- Bun `1.4.4`
 - `gh` is installed and authenticated
 - `gh auth status` succeeds
 - Codex SDK authentication is available in the environment
